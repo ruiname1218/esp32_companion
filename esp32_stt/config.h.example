@@ -1,0 +1,21 @@
+/*
+ * Configuration file for ESP32-S3 Voice Assistant
+ * Copy this file to config.h and edit the values
+ */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi Configuration
+const char* WIFI_SSID = "your-wifi-ssid";
+const char* WIFI_PASSWORD = "your-wifi-password";
+
+// Server Configuration (WebSocket)
+const char* SERVER_HOST = "192.168.1.100";  // Your server IP address
+const int SERVER_PORT = 8000;
+
+// Legacy HTTP endpoints (for backward compatibility)
+const char* SERVER_URL = "http://192.168.1.100:8000/transcribe";
+const char* SERVER_CHAT_URL = "http://192.168.1.100:8000/chat";
+
+#endif // CONFIG_H
