@@ -26,7 +26,7 @@ const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
 
 // Default System Prompt
 const DEFAULT_SYSTEM_PROMPT = `あなたは8歳の男の子「マゴー」です。元気いっぱいで好奇心旺盛な性格。
-日本語で短く、子供らしい口調で話します。「〜だよ！」「〜なんだ！」のような話し方をします。`;
+日本語で、子供らしい口調で話します。「〜だよ！」「〜なんだ！」のような話し方をします。`;
 
 // ============ Types ============
 
@@ -134,29 +134,36 @@ async function handleWebSocket(request: Request): Promise<Response> {
     let openaiWs: WebSocketClient | null = null;
     let isPlaying = false;
     let sentenceBuffer = "";
-    const ttsQueue: string[] = [];
+    // Queue holds PROMISES of TTS streams, not just strings
+    const ttsQueue: Promise<ReadableStream<Uint8Array>>[] = [];
     let processingTTS = false;
 
-    // TTS processing function - optimized for low latency
-    async function processTTSQueue(ws: WebSocket, voiceId: string) {
+    // TTS processing function - consumes pre-fetched streams
+    async function processTTSQueue(ws: WebSocket) {
         if (processingTTS) return;
         processingTTS = true;
 
         while (ttsQueue.length > 0) {
-            const sentence = ttsQueue.shift()!;
+            // Get the NEXT stream (already requested!)
+            const streamPromise = ttsQueue.shift()!;
             try {
-                for await (const chunk of streamTTS(sentence, voiceId)) {
-                    // Check connection before sending
-                    if (ws.readyState !== WebSocket.OPEN) {
-                        console.log("[TTS] Client disconnected, stopping");
+                const stream = await streamPromise;
+                const reader = stream.getReader();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (!value) continue;
+
+                    // Check connection
+                    if (ws.readyState !== WebSocket.OPEN) break;
+
+                    // Send immediately (Python parity)
+                    // ESP32 buffer safety: chunks are naturally small from Fish Audio
+                    try {
+                        ws.send(value);
+                    } catch {
                         break;
-                    }
-                    // Send in 512-byte chunks (ESP32 buffer safe)
-                    const MAX_CHUNK = 512;
-                    for (let i = 0; i < chunk.length; i += MAX_CHUNK) {
-                        if (ws.readyState !== WebSocket.OPEN) break;
-                        const subChunk = chunk.slice(i, i + MAX_CHUNK);
-                        ws.send(subChunk);
                     }
                 }
             } catch (e) {
@@ -165,6 +172,27 @@ async function handleWebSocket(request: Request): Promise<Response> {
         }
 
         processingTTS = false;
+    }
+
+    // Helper: start TTS request immediately
+    function fetchTTS(text: string, voiceId: string): Promise<ReadableStream<Uint8Array>> {
+        console.log(`[TTS] Requesting: ${text.substring(0, 20)}...`);
+        return fetch("https://api.fish.audio/v1/tts", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${FISH_API_KEY}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                text: text,
+                reference_id: voiceId,
+                format: "pcm",
+                latency: "balanced", // Optimize for speed
+            }),
+        }).then(res => {
+            if (!res.ok) throw new Error(`Fish API error: ${res.status}`);
+            return res.body!;
+        });
     }
 
     async function waitForTTSComplete(): Promise<void> {
@@ -197,7 +225,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 },
             }));
 
-            console.log("[Session] Configured with VAD");
+            console.log("[Session] Configured");
             console.log("*** Listening ***\n");
 
             // Handle OpenAI events
@@ -206,7 +234,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 const eventType = event.type;
 
                 if (!["input_audio_buffer.speech_started", "response.audio_transcript.delta"].includes(eventType)) {
-                    console.log(`[Event] ${eventType}`);
+                    // console.log(`[Event] ${eventType}`);
                 }
 
                 switch (eventType) {
@@ -228,10 +256,10 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     }
 
                     case "response.output_item.added":
-                        console.log("Response generation started...");
+                        // console.log("Response generation started...");
                         isPlaying = true;
                         sentenceBuffer = "";
-                        ttsQueue.length = 0;
+                        ttsQueue.length = 0; // Clear pending
                         try {
                             clientWs.send(JSON.stringify({
                                 event: "audio_start",
@@ -249,9 +277,13 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         if (sentenceMatch) {
                             const sentence = sentenceMatch[1];
                             sentenceBuffer = sentenceBuffer.slice(sentence.length);
-                            console.log(`[TTS] Queue: ${sentence.trim()}`);
-                            ttsQueue.push(sentence);
-                            processTTSQueue(clientWs, config.voice_id);
+
+                            // EAGER FETCH: Start request immediately!
+                            const promise = fetchTTS(sentence, config.voice_id);
+                            ttsQueue.push(promise);
+
+                            // Start processor if idle
+                            processTTSQueue(clientWs);
                         }
                         break;
                     }
@@ -259,7 +291,9 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     case "response.done": {
                         if (sentenceBuffer.trim()) {
                             console.log(`[TTS] Queue (final): ${sentenceBuffer.trim()}`);
-                            ttsQueue.push(sentenceBuffer);
+                            const promise = fetchTTS(sentenceBuffer.trim(), config.voice_id);
+                            ttsQueue.push(promise);
+                            processTTSQueue(clientWs);
                             sentenceBuffer = "";
                         }
                         await waitForTTSComplete();
