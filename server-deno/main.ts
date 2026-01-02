@@ -84,7 +84,7 @@ function connectToOpenAI(): Promise<WebSocketClient> {
 
 // ============ Fish Audio TTS ============
 
-async function* streamTTS(text: string, voiceId: string): AsyncGenerator<Uint8Array> {
+async function streamTTS(text: string, voiceId: string): Promise<ReadableStream<Uint8Array>> {
     const response = await fetch(FISH_TTS_URL, {
         method: "POST",
         headers: {
@@ -100,18 +100,14 @@ async function* streamTTS(text: string, voiceId: string): AsyncGenerator<Uint8Ar
     });
 
     if (!response.ok) {
-        console.error("[TTS] Error:", response.status, await response.text());
-        return;
+        throw new Error(`TTS Error: ${response.status} ${await response.text()}`);
     }
 
-    const reader = response.body?.getReader();
-    if (!reader) return;
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) yield value;
+    if (!response.body) {
+        throw new Error("No body in TTS response");
     }
+
+    return response.body;
 }
 
 // ============ WebSocket Handler ============
@@ -136,8 +132,8 @@ async function handleWebSocket(request: Request): Promise<Response> {
     let sentenceBuffer = "";
 
     // Audio Streaming Queue (Pipelining)
-    // We store Promises that resolve to the audio stream generator
-    const audioStreamQueue: Promise<AsyncGenerator<Uint8Array>>[] = [];
+    // We store Promises that resolve to the audio ReadableStream
+    const audioStreamQueue: Promise<ReadableStream<Uint8Array>>[] = [];
     let processingStream = false;
 
     // TTS stream processor
@@ -146,16 +142,14 @@ async function handleWebSocket(request: Request): Promise<Response> {
         processingStream = true;
 
         while (audioStreamQueue.length > 0) {
-            // Take the next stream promise (LIFO/FIFO? FIFO - we want order)
             const streamPromise = audioStreamQueue.shift()!;
 
             try {
-                // Wait for the stream to be ready (network request to Fish Audio)
-                // This runs in parallel with previous audio playback!
+                // Wait for headers (prefetching happened in background)
                 const stream = await streamPromise;
 
+                // Read from stream
                 for await (const chunk of stream) {
-                    // Check connection before sending
                     if (ws.readyState !== WebSocket.OPEN) {
                         break;
                     }
