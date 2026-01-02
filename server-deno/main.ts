@@ -187,10 +187,14 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 text: text,
                 reference_id: voiceId,
                 format: "pcm",
-                latency: "balanced", // Optimize for speed
+                latency: "balanced",
             }),
         }).then(res => {
-            if (!res.ok) throw new Error(`Fish API error: ${res.status}`);
+            if (!res.ok) {
+                console.error(`[Fish API Error] Status: ${res.status}, Text: ${res.statusText}`);
+                res.text().then(t => console.error(`[Fish API Body] ${t}`));
+                throw new Error(`Fish API error: ${res.status}`);
+            }
             return res.body!;
         });
     }
@@ -210,9 +214,9 @@ async function handleWebSocket(request: Request): Promise<Response> {
             openaiWs.send(JSON.stringify({
                 type: "session.update",
                 session: {
-                    modalities: ["text", "audio"],
+                    modalities: ["text"], // Text only (we use Fish Audio for output) = Faster & Cheaper
                     instructions: config.system_prompt,
-                    voice: "shimmer",
+                    voice: "shimmer", // Ignored for text-only but good to keep
                     input_audio_format: "pcm16",
                     output_audio_format: "pcm16",
                     input_audio_transcription: { model: "whisper-1" },
@@ -220,12 +224,12 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         type: "server_vad",
                         threshold: 0.1,
                         prefix_padding_ms: 0,
-                        silence_duration_ms: 700,
+                        silence_duration_ms: 600,
                     },
                 },
             }));
 
-            console.log("[Session] Configured");
+            console.log("[Session] Configured (Text Mode)");
             console.log("*** Listening ***\n");
 
             // Handle OpenAI events
@@ -233,8 +237,9 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 const event = JSON.parse(data.toString());
                 const eventType = event.type;
 
-                if (!["input_audio_buffer.speech_started", "response.audio_transcript.delta"].includes(eventType)) {
-                    // console.log(`[Event] ${eventType}`);
+                // Log all events for debugging
+                if (!["response.audio.delta", "response.audio_transcript.delta"].includes(eventType)) {
+                    console.log(`[Event] ${eventType}`);
                 }
 
                 switch (eventType) {
@@ -256,7 +261,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     }
 
                     case "response.output_item.added":
-                        // console.log("Response generation started...");
+                        console.log("Response generation started...");
                         isPlaying = true;
                         sentenceBuffer = "";
                         ttsQueue.length = 0; // Clear pending
@@ -269,7 +274,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         } catch { /* ignore */ }
                         break;
 
-                    case "response.audio_transcript.delta": {
+                    case "response.text.delta": {
                         const delta = event.delta || "";
                         sentenceBuffer += delta;
 
