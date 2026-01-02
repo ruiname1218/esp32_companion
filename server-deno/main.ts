@@ -95,7 +95,7 @@ async function streamTTS(text: string, voiceId: string): Promise<ReadableStream<
             text: text,
             reference_id: voiceId,
             format: "pcm",
-            latency: "normal",
+            latency: "balanced",
         }),
     });
 
@@ -155,16 +155,22 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     }
 
                     // Split into chunks to prevent ESP32 buffer overflow / WDT timeout
-                    // SSL processing on ESP32 requires significant memory/time
-                    const MAX_CHUNK = 1024;
+                    // Matching Python main.py logic exactly for consistency
+                    const MAX_CHUNK = 512;
+                    let chunksSent = 0;
+
                     for (let i = 0; i < chunk.length; i += MAX_CHUNK) {
                         if (ws.readyState !== WebSocket.OPEN) break;
                         const subChunk = chunk.slice(i, i + MAX_CHUNK);
                         try {
                             ws.send(subChunk);
-                            // Rate Limiting: Slight delay to prevent flooding ESP32 network stack
-                            // 1024B / 2ms ~= 500KB/s (PLENTY for audio, but gentle on ESP32)
-                            await new Promise(r => setTimeout(r, 2));
+                            chunksSent++;
+
+                            // Rate Limiting: yield every 4 chunks (2048 bytes) for 5ms
+                            // This matches the Python implementation
+                            if (chunksSent % 4 === 0) {
+                                await new Promise(r => setTimeout(r, 5));
+                            }
                         } catch (e) {
                             console.error("[TTS Send Error]", e);
                             break;
@@ -194,18 +200,19 @@ async function handleWebSocket(request: Request): Promise<Response> {
             openaiWs.send(JSON.stringify({
                 type: "session.update",
                 session: {
-                    modalities: ["text", "audio"],
+                    modalities: ["text"],
                     instructions: config.system_prompt,
-                    voice: "shimmer",
                     input_audio_format: "pcm16",
-                    output_audio_format: "pcm16",
-                    input_audio_transcription: { model: "whisper-1" },
+                    input_audio_transcription: {
+                        model: "whisper-1",
+                        language: "ja"
+                    },
                     turn_detection: {
                         type: "server_vad",
-                        threshold: 0.5, // Slightly higher threshold to prevent noise triggering
-                        prefix_padding_ms: 300,
-                        silence_duration_ms: 500,
-                    },
+                        threshold: 0.1,          // Lower = more sensitive to quiet speech
+                        prefix_padding_ms: 0,    // Capture audio before speech detected
+                        silence_duration_ms: 700 // Wait for speech to truly end
+                    }
                 },
             }));
 
