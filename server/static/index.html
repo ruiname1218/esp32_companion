@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magoo Cloud Dashboard</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 300px;
+            background: #16213e;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .sidebar-header h1 {
+            font-size: 1.5em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .device-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .device-item {
+            padding: 15px;
+            margin-bottom: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .device-item:hover,
+        .device-item.active {
+            background: rgba(102, 126, 234, 0.2);
+        }
+
+        .device-id {
+            font-weight: bold;
+            font-family: monospace;
+        }
+
+        .device-status {
+            font-size: 0.8em;
+            color: #888;
+            margin-top: 4px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* Main Content */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #1a1a2e;
+        }
+
+        .empty-state {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+            flex-direction: column;
+        }
+
+        .content-header {
+            padding: 20px;
+            background: #16213e;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .device-info h2 {
+            font-family: monospace;
+        }
+
+        .stats-badge {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+            padding: 5px 10px;
+            border-radius: 12px;
+            font-size: 0.9em;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            padding: 0 20px;
+            background: #16213e;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .tab {
+            padding: 15px 20px;
+            cursor: pointer;
+            color: #888;
+            border-bottom: 2px solid transparent;
+        }
+
+        .tab.active {
+            color: #fff;
+            border-bottom-color: #667eea;
+        }
+
+        /* Tab Content */
+        .tab-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Chat History */
+        .chat-log {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .load-more-btn {
+            width: 100%;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px dashed rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            margin-bottom: 15px;
+        }
+
+        .load-more-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 80%;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            align-items: flex-end;
+        }
+
+        .message.assistant {
+            align-self: flex-start;
+            align-items: flex-start;
+        }
+
+        .bubble {
+            padding: 12px 16px;
+            border-radius: 16px;
+            line-height: 1.5;
+            position: relative;
+        }
+
+        .message.user .bubble {
+            background: #667eea;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant .bubble {
+            background: #2a2a40;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-bottom-left-radius: 4px;
+        }
+
+        .meta {
+            font-size: 0.75em;
+            color: #666;
+            margin-top: 4px;
+            display: flex;
+            gap: 10px;
+        }
+
+        /* Settings Form */
+        .settings-form {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+
+        input,
+        textarea {
+            width: 100%;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            color: #fff;
+        }
+
+        button.save-btn {
+            width: 100%;
+            padding: 12px;
+            background: #667eea;
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button.save-btn:hover {
+            opacity: 0.9;
+        }
+
+        /* Status */
+        .connection-error {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #f44336;
+            padding: 10px 20px;
+            border-radius: 8px;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>🤖 Magoo Cloud</h1>
+        </div>
+        <div class="device-list" id="deviceList">
+            <!-- Device items here -->
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main">
+        <div id="emptyState" class="empty-state">
+            <h2>Select a device to manage</h2>
+            <p>Or connect a new ESP32 device</p>
+        </div>
+
+        <div id="deviceContent" style="display:none; height: 100%; flex-direction: column;">
+            <div class="content-header">
+                <div class="device-info">
+                    <h2 id="currentDeviceId"></h2>
+                    <span id="lastActive" style="color: #888; font-size: 0.9em;"></span>
+                </div>
+                <div class="stats-badge" id="totalCost">Total: $0.00</div>
+            </div>
+
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('history')">💬 History</div>
+                <div class="tab" onclick="switchTab('settings')">⚙️ Settings</div>
+            </div>
+
+            <div id="tab-history" class="tab-content active">
+                <div class="chat-log" id="chatLog"></div>
+            </div>
+
+            <div id="tab-settings" class="tab-content">
+                <div class="settings-form">
+                    <div class="form-group">
+                        <label>Fish Audio Voice ID</label>
+                        <input type="text" id="voiceId">
+                    </div>
+                    <div class="form-group">
+                        <label>System Prompt</label>
+                        <textarea id="systemPrompt" rows="10"></textarea>
+                    </div>
+                    <button class="save-btn" onclick="saveDeviceSettings()">Save Changes</button>
+                    <p id="saveStatus" style="text-align: center; margin-top: 10px; font-size: 0.9em;"></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="errorBanner" class="connection-error">Firebase not configured</div>
+
+    <script>
+        let currentDevice = null;
+        let currentLimit = 50;
+        let allLogs = [];
+        let hasMoreLogs = true;
+
+        // --- API Functions ---
+
+        async function fetchDevices() {
+            try {
+                const res = await fetch('/api/devices');
+                const text = await res.text();
+                try {
+                    const devices = JSON.parse(text);
+                    if (devices.success === false) {
+                        showError(devices.message);
+                        return;
+                    }
+                    renderDeviceList(devices);
+                } catch (e) {
+                    console.error("JSON Parse error", e);
+                }
+            } catch (e) {
+                console.error("Fetch error", e);
+            }
+        }
+
+        async function fetchDeviceLogs(deviceId, limit = 50, append = false) {
+            const res = await fetch(`/api/devices/${deviceId}/logs?limit=${limit}`);
+            const logs = await res.json();
+
+            // Check if there might be more logs
+            hasMoreLogs = logs.length >= limit;
+
+            // Store all logs
+            allLogs = logs;
+
+            renderLogs(logs, append);
+            calculateStats(logs);
+        }
+
+        async function loadMoreLogs() {
+            if (!currentDevice) return;
+            currentLimit += 50;
+            await fetchDeviceLogs(currentDevice, currentLimit);
+        }
+
+        async function fetchDeviceConfig(deviceId) {
+            const res = await fetch(`/api/devices/${deviceId}`);
+            const config = await res.json();
+            document.getElementById('voiceId').value = config.voice_id || '';
+            document.getElementById('systemPrompt').value = config.system_prompt || '';
+        }
+
+        async function saveDeviceSettings() {
+            if (!currentDevice) return;
+
+            const btn = document.querySelector('.save-btn');
+            const status = document.getElementById('saveStatus');
+            btn.disabled = true;
+            btn.textContent = "Saving...";
+
+            try {
+                await fetch(`/api/devices/${currentDevice}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        voice_id: document.getElementById('voiceId').value,
+                        system_prompt: document.getElementById('systemPrompt').value
+                    })
+                });
+                status.textContent = "✅ Saved!";
+                status.style.color = "#4CAF50";
+            } catch (e) {
+                status.textContent = "❌ Error saving";
+                status.style.color = "#f44336";
+            }
+
+            btn.disabled = false;
+            btn.textContent = "Save Changes";
+            setTimeout(() => status.textContent = "", 3000);
+        }
+
+        // --- UI Functions ---
+
+        function renderDeviceList(devices) {
+            const list = document.getElementById('deviceList');
+            list.innerHTML = '';
+
+            devices.forEach(d => {
+                const div = document.createElement('div');
+                div.className = `device-item ${currentDevice === d.id ? 'active' : ''}`;
+                div.onclick = () => selectDevice(d.id);
+
+                div.innerHTML = `
+                    <div class="device-id">${d.id}</div>
+                    <div class="device-status">
+                        <span>Active: ${formatTime(d.last_active)}</span>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function selectDevice(deviceId) {
+            currentDevice = deviceId;
+            currentLimit = 50; // Reset limit
+            document.getElementById('emptyState').style.display = 'none';
+            document.getElementById('deviceContent').style.display = 'flex';
+            document.getElementById('currentDeviceId').textContent = deviceId;
+
+            const items = document.querySelectorAll('.device-item');
+            items.forEach(el => {
+                if (el.querySelector('.device-id').textContent === deviceId) {
+                    el.classList.add('active');
+                } else {
+                    el.classList.remove('active');
+                }
+            });
+
+            fetchDeviceLogs(deviceId);
+            fetchDeviceConfig(deviceId);
+        }
+
+        function renderLogs(logs) {
+            const container = document.getElementById('chatLog');
+            container.innerHTML = '';
+
+            // Sort by timestamp ASCENDING (oldest first) - create copy to avoid mutating
+            const sortedLogs = [...logs].sort((a, b) => {
+                const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+                const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+                return timeA - timeB;
+            });
+
+            // Add "Load More" button at top if there might be more
+            if (hasMoreLogs) {
+                const loadMoreBtn = document.createElement('button');
+                loadMoreBtn.className = 'load-more-btn';
+                loadMoreBtn.textContent = '⬆️ 過去の会話を読み込む';
+                loadMoreBtn.onclick = loadMoreLogs;
+                container.appendChild(loadMoreBtn);
+            }
+
+            sortedLogs.forEach(log => {
+                const div = document.createElement('div');
+                div.className = `message ${log.role}`;
+
+                const cost = log.cost_estimate ? `<span style="color: #4CAF50;">$${log.cost_estimate.toFixed(6)}</span>` : '';
+
+                div.innerHTML = `
+                    <div class="bubble">${log.content}</div>
+                    <div class="meta">
+                        <span>${formatTime(log.timestamp)}</span>
+                        ${cost}
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+
+            // Scroll to bottom
+            const tabContent = document.getElementById('tab-history');
+            tabContent.scrollTop = tabContent.scrollHeight;
+        }
+
+        function calculateStats(logs) {
+            const total = logs.reduce((sum, log) => sum + (log.cost_estimate || 0), 0);
+            document.getElementById('totalCost').textContent = `Est. Cost: $${total.toFixed(4)}`;
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+            const tabs = document.querySelectorAll('.tab');
+            if (tabName === 'history') tabs[0].classList.add('active');
+            else tabs[1].classList.add('active');
+
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return '-';
+            // Handle Firestore Timestamp format
+            if (timestamp._seconds) {
+                timestamp = timestamp._seconds * 1000;
+            }
+            const date = new Date(timestamp);
+            return date.toLocaleString('ja-JP');
+        }
+
+        function showError(msg) {
+            const banner = document.getElementById('errorBanner');
+            banner.textContent = msg;
+            banner.style.display = 'block';
+        }
+
+        // Initial load
+        fetchDevices();
+        // Poll for updates
+        setInterval(fetchDevices, 10000);
+        setInterval(() => {
+            if (currentDevice) fetchDeviceLogs(currentDevice, currentLimit);
+        }, 5000);
+
+    </script>
+</body>
+
+</html>

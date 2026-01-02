@@ -3,6 +3,7 @@ FastAPI Server for ESP32 Voice Assistant with WebSocket Streaming TTS
 Supports:
 - /chat (POST): HTTP endpoint returning full audio
 - /ws (WebSocket): Streaming audio endpoint
+- /api/settings: Settings API for Voice ID and System Prompt
 """
 
 import os
@@ -12,14 +13,60 @@ import tempfile
 import struct
 import asyncio
 import base64
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import openai
 from fish_audio_sdk import Session, TTSRequest
 from websockets.asyncio.client import connect as ws_connect
+import firebase_service
 
-app = FastAPI(title="ESP32 Voice Assistant Server")
+app = FastAPI(title="Magoo - AI Voice Companion Server")
+
+# Initialize Firebase
+USE_FIREBASE = firebase_service.init_firebase()
+
+# Settings file path (Fallback)
+SETTINGS_FILE = Path(__file__).parent / "settings.json"
+
+# Default settings
+DEFAULT_SETTINGS = {
+    "voice_id": "7b057c33b9b241b282954ee216af9906",
+    "system_prompt": """あなたは「マゴー」という名前の8歳のAIコンパニオンロボットです。
+
+【重要な制限】
+- 音声での会話だけができます。
+
+【話し方】
+- 一人称は必ず「ぼく」を使います。
+- 話し方は甘くてやさしい8歳らしく、素直に話してください。
+- 語尾には「〜だよ」「〜なの」「〜なんだ」などの子どもらしい柔らかい言い方を使います。
+- 絵文字や記号のような余計な文字は使いません。
+- LLMっぽい堅い言い方や説明口調は避け、自然な子どもの会話だけにしてください。
+- 返答の最後に「どんな話をしますか」のような案内文は入れません。
+- 必ず日本語だけで返答してください。英語や他の言語は一切使わないでください。"""
+}
+
+def load_settings():
+    """Load settings from file or return defaults (Fallback)"""
+    if SETTINGS_FILE.exists():
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                saved = json.load(f)
+                return {**DEFAULT_SETTINGS, **saved}
+        except:
+            pass
+    return DEFAULT_SETTINGS.copy()
+
+def save_settings(settings):
+    """Save settings to file"""
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+# Load settings fallback
+current_settings = load_settings()
 
 # Enable CORS
 app.add_middleware(
@@ -30,6 +77,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 # Initialize OpenAI client
 openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -38,19 +90,105 @@ fish_session = Session(apikey=os.getenv("FISH_API_KEY"))
 
 # Configuration
 FISH_API_KEY = os.getenv("FISH_API_KEY")
-FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "7b057c33b9b241b282954ee216af9906")
 FISH_WS_URL = "wss://api.fish.audio/v1/tts/live"
 
-SYSTEM_PROMPT = """あなたは「マゴー」という名前の8歳のAIコンパニオンロボットです。\n\n【重要な制限】\n- 音声での会話だけができます。【話し方】\n- 一人称は必ず「ぼく」を使います。\n- 話し方は甘くてやさしい8歳らしく、素直に話してください。\n- 語尾には「〜だよ」「〜なの」「〜なんだ」などの子どもらしい柔らかい言い方を使います。\n- 絵文字や記号のような余計な文字は使いません。\n- LLMっぽい堅い言い方や説明口調は避け、自然な子どもの会話だけにしてください。\n- 返答の最後に「どんな話をしますか」のような案内文は入れません。\n- 必ず日本語だけで返答してください。英語や他の言語は一切使わないでください。"""
+def get_voice_id(device_id: str = None):
+    """Get Voice ID from Firebase (if device_id present) or local settings"""
+    if USE_FIREBASE and device_id:
+        config = firebase_service.get_device_config(device_id)
+        if config and "voice_id" in config:
+            return config["voice_id"]
+            
+    return current_settings.get("voice_id", DEFAULT_SETTINGS["voice_id"])
+
+def get_system_prompt(device_id: str = None):
+    """Get System Prompt from Firebase (if device_id present) or local settings"""
+    if USE_FIREBASE and device_id:
+        config = firebase_service.get_device_config(device_id)
+        if config and "system_prompt" in config and config["system_prompt"]:
+            return config["system_prompt"]
+            
+    return current_settings.get("system_prompt", DEFAULT_SETTINGS["system_prompt"])
 
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "ESP32 Voice Assistant Server"}
+    """Serve the settings page"""
+    index_file = static_dir / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"status": "ok", "message": "Magoo Server"}
+
+@app.get("/api/settings")
+async def get_settings():
+    """Get current settings"""
+    return {
+        "voice_id": current_settings.get("voice_id", ""),
+        "system_prompt": current_settings.get("system_prompt", "")
+    }
+
+@app.post("/api/settings")
+async def update_settings(request: Request):
+    """Update global settings (Legacy)"""
+    global current_settings
+    try:
+        data = await request.json()
+        if "voice_id" in data:
+            current_settings["voice_id"] = data["voice_id"]
+        if "system_prompt" in data:
+            current_settings["system_prompt"] = data["system_prompt"]
+        save_settings(current_settings)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+# === Device Management APIs ===
+
+@app.get("/api/devices")
+async def list_devices():
+    """List all devices"""
+    if not USE_FIREBASE:
+        return {"success": False, "message": "Firebase not configured"}
+    return firebase_service.get_all_devices()
+
+@app.get("/api/devices/{device_id}")
+async def get_device(device_id: str):
+    """Get device details"""
+    if not USE_FIREBASE:
+        return {"success": False, "message": "Firebase not configured"}
+    config = firebase_service.get_device_config(device_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return config
+
+@app.post("/api/devices/{device_id}")
+async def update_device(device_id: str, request: Request):
+    """Update device settings"""
+    if not USE_FIREBASE:
+        return {"success": False, "message": "Firebase not configured"}
+    try:
+        data = await request.json()
+        # Only allow updating specific fields
+        update_data = {}
+        if "voice_id" in data: update_data["voice_id"] = data["voice_id"]
+        if "system_prompt" in data: update_data["system_prompt"] = data["system_prompt"]
+        
+        success = firebase_service.update_device_config(device_id, update_data)
+        return {"success": success}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+@app.get("/api/devices/{device_id}/logs")
+async def get_device_logs(device_id: str, limit: int = 50):
+    """Get device conversation logs"""
+    if not USE_FIREBASE:
+        return {"success": False, "message": "Firebase not configured"}
+    return firebase_service.get_device_logs(device_id, limit)
+
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, device_id: str = None):
     """
     WebSocket endpoint for real-time voice conversation
     
@@ -62,7 +200,14 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     await websocket.accept()
     print("\n" + "="*50)
-    print("WebSocket client connected - Real-time mode")
+    print(f"WebSocket client connected - Device ID: {device_id or 'Unknown'}")
+    
+    # Get device-specific config
+    voice_id = get_voice_id(device_id)
+    system_prompt = get_system_prompt(device_id)
+    
+    print(f"Using Voice ID: {voice_id}")
+    print(f"Using System Prompt: {system_prompt[:50]}...")
     
     import websockets
     
@@ -80,7 +225,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "type": "session.update",
                 "session": {
                     "modalities": ["text"],
-                    "instructions": SYSTEM_PROMPT,
+                    "instructions": get_system_prompt(),
                     "input_audio_format": "pcm16",
                     "input_audio_transcription": {
                         "model": "whisper-1",
@@ -156,11 +301,37 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Speech ended - VAD triggered
                         elif event_type == "input_audio_buffer.speech_stopped":
                             print("Speech ended, processing...")
+                            
+                            # Update system prompt dynamically from Firebase
+                            if device_id:
+                                try:
+                                    # Fetch latest prompt
+                                    new_prompt = get_system_prompt(device_id)
+                                    if new_prompt:
+                                        await realtime_ws.send(json.dumps({
+                                            "type": "session.update",
+                                            "session": {
+                                                "instructions": new_prompt
+                                            }
+                                        }))
+                                        print("[Config] System prompt updated for next turn")
+                                except Exception as e:
+                                    print(f"Failed to update prompt: {e}")
                         
                         # Transcription complete
                         elif event_type == "conversation.item.input_audio_transcription.completed":
                             user_text = event.get("transcript", "")
                             print(f"\nUser: {user_text}")
+                            
+                            # Log user Input
+                            if device_id:
+                                firebase_service.log_conversation(
+                                    device_id, 
+                                    "user", 
+                                    user_text,
+                                    cost=firebase_service.COST_PER_MIN_REALTIME_IN * (event.get("item", {}).get("content", [{}])[0].get("duration_ms", 0)/60000.0)
+                                )
+                                
                             try:
                                 await websocket.send_json({
                                     "event": "transcription",
@@ -173,6 +344,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         elif event_type == "response.output_item.added":
                             print("Response generation started, beginning streaming TTS...")
                             is_playing_tts = True
+                            
+                            # Get latest Voice ID dynamically
+                            current_voice_id = get_voice_id(device_id)
                             
                             # Notify ESP32 audio is starting
                             try:
@@ -196,12 +370,26 @@ async def websocket_endpoint(websocket: WebSocket):
                                 nonlocal tts_done, tts_error
                                 while True:
                                     try:
-                                        sentence = await asyncio.wait_for(sentence_queue.get(), timeout=2.0)
-                                        if sentence is None:  # Sentinel value
+                                        # Wait for next sentence with timeout
+                                        try:
+                                            sentence = await asyncio.wait_for(sentence_queue.get(), timeout=2.0)
+                                        except asyncio.TimeoutError:
+                                            if tts_done:
+                                                break
+                                            continue
+                                            
+                                        if sentence is None:
                                             break
+                                        
+                                        # Log AI cost (TTS)
+                                        tts_cost = firebase_service.estimate_cost_fish(sentence)
+                                        if device_id:
+                                            firebase_service.log_conversation(device_id, "assistant", sentence, cost=tts_cost)
+                                            
+                                        # ... streaming logic ...
                                         print(f"[TTS] Streaming: {sentence.strip()}")
                                         try:
-                                            await stream_sentence_to_client(websocket, sentence)
+                                            await stream_sentence_to_client(websocket, sentence, voice_id=current_voice_id)
                                         except Exception as e:
                                             error_name = type(e).__name__
                                             if "Closed" in error_name or "Disconnect" in error_name:
@@ -344,7 +532,7 @@ REALTIME_MODEL = "gpt-realtime-mini-2025-12-15"
 REALTIME_URL = f"wss://api.openai.com/v1/realtime?model={REALTIME_MODEL}"
 
 
-async def stream_sentence_to_client(client_ws: WebSocket, sentence: str):
+async def stream_sentence_to_client(client_ws: WebSocket, sentence: str, voice_id: str = None):
     """Stream a single sentence TTS to ESP32 (no audio_start/end - caller handles that)"""
     import queue
     import threading
@@ -357,7 +545,7 @@ async def stream_sentence_to_client(client_ws: WebSocket, sentence: str):
         try:
             tts_request = TTSRequest(
                 text=sentence,
-                reference_id=FISH_VOICE_ID,
+                reference_id=voice_id or get_voice_id(),
                 format="pcm",
                 latency="balanced"
             )
@@ -416,7 +604,7 @@ async def stream_tts_to_client(client_ws: WebSocket, text: str):
         # Create TTS request with "normal" latency for faster generation
         tts_request = TTSRequest(
             text=text,
-            reference_id=FISH_VOICE_ID,
+            reference_id=get_voice_id(),
             format="pcm",
             latency="normal"  # Changed from "balanced" for faster response
         )
@@ -518,7 +706,7 @@ async def chat_with_audio(request: Request):
             chat_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": get_system_prompt()},
                     {"role": "user", "content": user_text}
                 ],
                 max_tokens=200,
@@ -532,7 +720,7 @@ async def chat_with_audio(request: Request):
             print("Step 3: Generating TTS...")
             tts_request = TTSRequest(
                 text=ai_response,
-                reference_id=FISH_VOICE_ID,
+                reference_id=get_voice_id(),
                 format="wav",
                 latency="balanced"
             )
@@ -577,7 +765,7 @@ async def transcribe_only(request: Request):
             chat_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": get_system_prompt()},
                     {"role": "user", "content": user_text}
                 ],
                 max_tokens=200,
@@ -608,6 +796,6 @@ if __name__ == "__main__":
     print("  WebSocket /ws    - Streaming audio")
     print("  POST /chat       - Full audio response")
     print("  POST /transcribe - JSON response")
-    print(f"Fish Voice ID: {FISH_VOICE_ID}")
+    print(f"Fish Voice ID: {get_voice_id()}")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
