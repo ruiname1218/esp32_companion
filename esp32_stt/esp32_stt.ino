@@ -1,19 +1,45 @@
 /*
  * ESP32-S3 Voice Assistant - Real-time Conversation Mode
  * 
- * Starts listening immediately on power up.
- * Uses VAD (Voice Activity Detection) on server side for turn detection.
+ * Features:
+ * - WiFi Provisioning via Captive Portal
+ * - Real-time voice conversation with VAD
+ * - NVS storage for persistent configuration
  * 
  * Hardware:
  * INMP441 (Mic):     SCK->GPIO4, WS->GPIO5, SD->GPIO6
  * MAX98357A (Spk):   BCLK->GPIO15, LRC->GPIO16, DIN->GPIO17
+ * Button:            GPIO0 (Boot button for provisioning mode)
  */
 
 #include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <driver/i2s.h>
-#include "config.h"
+#include "wifi_portal.h"
+#include "config.h"  // For SERVER_HOST and SERVER_PORT
+
+// Button for provisioning mode
+#define PROVISION_BUTTON 0  // Boot button (GPIO0)
+#define BUTTON_HOLD_TIME 3000  // 3 seconds to enter provisioning mode
+
+// AP Mode settings
+const char* AP_SSID = "Magoo-Setup";
+const char* AP_PASS = "";  // Open network for easy access
+
+// Preferences (NVS) - WiFi credentials only
+Preferences preferences;
+String savedSSID = "";
+String savedPassword = "";
+bool provisioningMode = false;
+
+// Web server for Captive Portal
+WebServer webServer(80);
+DNSServer dnsServer;
+const byte DNS_PORT = 53;
 
 // I2S Microphone (INMP441)
 #define I2S_MIC_PORT      I2S_NUM_0
@@ -59,16 +85,41 @@ const unsigned long AUDIO_SEND_INTERVAL = 20;  // Send audio every 20ms
 
 void setup() {
   Serial.begin(115200);
-  delay(2000);
+  delay(1000);
+  
+  // Initialize button
+  pinMode(PROVISION_BUTTON, INPUT_PULLUP);
   
   Serial.println();
   Serial.println("================================================");
-  Serial.println("  ESP32-S3 Voice Assistant - Realtime Mode");
+  Serial.println("  Magoo - AI Voice Companion");
   Serial.println("================================================");
   Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
   Serial.printf("PSRAM: %d bytes\n", ESP.getPsramSize());
   
-  // Allocate buffers in PSRAM
+  // Load saved configuration from NVS
+  loadConfiguration();
+  
+  // Check if button is held for provisioning mode
+  Serial.println("Hold BOOT button for 3 seconds to enter setup mode...");
+  unsigned long buttonStart = millis();
+  while (digitalRead(PROVISION_BUTTON) == LOW) {
+    if (millis() - buttonStart > BUTTON_HOLD_TIME) {
+      Serial.println("Entering WiFi Setup Mode!");
+      provisioningMode = true;
+      break;
+    }
+    delay(100);
+  }
+  
+  // Check if we have saved WiFi credentials
+  if (savedSSID.length() == 0 || provisioningMode) {
+    Serial.println("No WiFi configured or setup requested");
+    startProvisioningMode();
+    return;  // Don't continue setup, run portal in loop
+  }
+  
+  // Allocate audio buffers in PSRAM
   audioRingBuffer = (uint8_t*)ps_malloc(AUDIO_BUFFER_SIZE);
   if (!audioRingBuffer) {
     Serial.println("ERROR: Failed to allocate audio buffer!");
@@ -76,8 +127,12 @@ void setup() {
   }
   memset(audioRingBuffer, 0, AUDIO_BUFFER_SIZE);
   
-  // Connect WiFi
-  connectWiFi();
+  // Connect to saved WiFi
+  if (!connectToWiFi()) {
+    Serial.println("WiFi connection failed, entering setup mode");
+    startProvisioningMode();
+    return;
+  }
   
   // Initialize I2S
   if (!initMicrophoneI2S()) {
@@ -97,6 +152,14 @@ void setup() {
 }
 
 void loop() {
+  // Provisioning mode - run Captive Portal
+  if (provisioningMode) {
+    dnsServer.processNextRequest();
+    webServer.handleClient();
+    delay(1);
+    return;
+  }
+  
   // Check WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi lost! Reconnecting...");
@@ -139,11 +202,34 @@ void loop() {
   delay(1);
 }
 
-void connectWiFi() {
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
+// ================== WiFi Provisioning Functions ==================
+
+void loadConfiguration() {
+  preferences.begin("magoo", true);  // Read-only
+  savedSSID = preferences.getString("ssid", "");
+  savedPassword = preferences.getString("password", "");
+  preferences.end();
   
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("Configuration loaded from NVS:");
+  Serial.printf("  SSID: %s\n", savedSSID.c_str());
+  Serial.printf("  Server: %s:%d (from config.h)\n", SERVER_HOST, SERVER_PORT);
+}
+
+void saveConfiguration(String ssid, String password) {
+  preferences.begin("magoo", false);  // Read-write
+  preferences.putString("ssid", ssid);
+  preferences.putString("password", password);
+  preferences.end();
+  
+  Serial.println("WiFi configuration saved to NVS");
+}
+
+bool connectToWiFi() {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(savedSSID);
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(savedSSID.c_str(), savedPassword.c_str());
   
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 30) {
@@ -156,16 +242,112 @@ void connectWiFi() {
     Serial.println("\nWiFi connected!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
+    return true;
   } else {
-    Serial.println("\nWiFi failed!");
-    ESP.restart();
+    Serial.println("\nWiFi connection failed!");
+    return false;
   }
 }
 
-void connectWebSocket() {
-  Serial.println("Connecting to server...");
+void startProvisioningMode() {
+  provisioningMode = true;
   
-  webSocket.begin(SERVER_HOST, SERVER_PORT, "/ws");
+  Serial.println("\n========================================");
+  Serial.println("  WiFi Setup Mode");
+  Serial.println("========================================");
+  Serial.println("Connect to WiFi: Magoo-Setup");
+  Serial.println("Then open any website to configure");
+  Serial.println("========================================\n");
+  
+  // Start AP Mode
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  delay(100);
+  
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(apIP);
+  
+  // Start DNS server for Captive Portal
+  dnsServer.start(DNS_PORT, "*", apIP);
+  
+  // Setup web server routes
+  webServer.on("/", HTTP_GET, handleRoot);
+  webServer.on("/scan", HTTP_GET, handleScan);
+  webServer.on("/save", HTTP_POST, handleSave);
+  webServer.on("/generate_204", HTTP_GET, handleRoot);  // Android captive portal
+  webServer.on("/fwlink", HTTP_GET, handleRoot);  // Microsoft captive portal
+  webServer.onNotFound(handleRoot);  // Redirect all to root
+  
+  webServer.begin();
+  Serial.println("Captive Portal started");
+}
+
+void handleRoot() {
+  webServer.send(200, "text/html", PORTAL_HTML);
+}
+
+void handleScan() {
+  int n = WiFi.scanNetworks();
+  String json = "{\"networks\":[";
+  
+  for (int i = 0; i < n; i++) {
+    if (i > 0) json += ",";
+    json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]}";
+  
+  webServer.send(200, "application/json", json);
+  WiFi.scanDelete();
+}
+
+void handleSave() {
+  if (webServer.hasArg("plain")) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
+    
+    if (error) {
+      webServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+      return;
+    }
+    
+    String ssid = doc["ssid"] | "";
+    String password = doc["password"] | "";
+    
+    if (ssid.length() == 0) {
+      webServer.send(400, "application/json", "{\"success\":false,\"message\":\"SSID is required\"}");
+      return;
+    }
+    
+    // Save WiFi configuration
+    saveConfiguration(ssid, password);
+    
+    webServer.send(200, "application/json", "{\"success\":true}");
+    
+    // Restart after short delay
+    delay(1000);
+    ESP.restart();
+  } else {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"No data\"}");
+  }
+}
+
+// ================== WebSocket Functions ==================
+
+
+// Connect to WebSocket server with Device ID (MAC)
+void connectWebSocket() {
+  // Get MAC Address as Device ID
+  String mac = WiFi.macAddress();
+  mac.replace(":", ""); // Remove colons to make it cleaner
+  
+  Serial.printf("Connecting to WebSocket: %s:%d\n", SERVER_HOST, SERVER_PORT);
+  Serial.printf("Device ID: %s\n", mac.c_str());
+  
+  // Construct path with query param
+  String path = "/ws?device_id=" + mac;
+  
+  webSocket.begin(SERVER_HOST, SERVER_PORT, path.c_str());
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(3000);
   webSocket.enableHeartbeat(30000, 10000, 3);

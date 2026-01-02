@@ -33,4 +33,11 @@ Thumbs.db
 *.tmp
 *.temp
 
-config.h
+# ESP32 Config (contains server address)
+esp32_stt/config.h
+
+# Firebase credentials (NEVER push this!)
+server/serviceAccountKey.json
+
+# Local settings
+server/settings.json

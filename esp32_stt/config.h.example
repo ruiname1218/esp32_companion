@@ -1,21 +1,19 @@
-/*
- * Configuration file for ESP32-S3 Voice Assistant
- * Copy this file to config.h and edit the values
- */
+// ============================================
+// Magoo - ESP32 AI Companion Configuration
+// ============================================
+// 
+// このファイルを config.h にコピーして編集してください:
+//   cp config.h.example config.h
 
-#ifndef CONFIG_H
-#define CONFIG_H
+// ============================================
 
-// WiFi Configuration
-const char* WIFI_SSID = "your-wifi-ssid";
-const char* WIFI_PASSWORD = "your-wifi-password";
 
-// Server Configuration (WebSocket)
-const char* SERVER_HOST = "192.168.1.100";  // Your server IP address
-const int SERVER_PORT = 8000;
 
-// Legacy HTTP endpoints (for backward compatibility)
-const char* SERVER_URL = "http://192.168.1.100:8000/transcribe";
-const char* SERVER_CHAT_URL = "http://192.168.1.100:8000/chat";
+// ------------ WiFi設定（オプション）------------
+// WiFiはCaptive Portalで設定可能ですが、
+// 開発時は直接書いておくと便利です。
+// const char* WIFI_SSID = "YourWiFiSSID";
+// const char* WIFI_PASSWORD = "YourWiFiPassword";
 
-#endif // CONFIG_H
+// ------------ 開発用オプション ------------
+// #define DEBUG_AUDIO  // 有効にすると音声データのデバッグ出力
