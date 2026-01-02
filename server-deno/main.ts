@@ -134,50 +134,39 @@ async function handleWebSocket(request: Request): Promise<Response> {
     let openaiWs: WebSocketClient | null = null;
     let isPlaying = false;
     let sentenceBuffer = "";
-    // Queue holds PROMISES of TTS streams, not just strings
-    const ttsQueue: Promise<ReadableStream<Uint8Array>>[] = [];
-    let processingTTS = false;
 
-    // TTS processing function - consumes pre-fetched streams
-    async function processTTSQueue(ws: WebSocket) {
-        if (processingTTS) return;
-        processingTTS = true;
+    // Audio Streaming Queue (Pipelining)
+    // We store Promises that resolve to the audio stream generator
+    const audioStreamQueue: Promise<AsyncGenerator<Uint8Array>>[] = [];
+    let processingStream = false;
 
-        while (ttsQueue.length > 0) {
-            // Get the NEXT stream (already requested!)
-            const streamPromise = ttsQueue.shift()!;
+    // TTS stream processor
+    async function processAudioStreamQueue(ws: WebSocket) {
+        if (processingStream) return;
+        processingStream = true;
+
+        while (audioStreamQueue.length > 0) {
+            // Take the next stream promise (LIFO/FIFO? FIFO - we want order)
+            const streamPromise = audioStreamQueue.shift()!;
+
             try {
+                // Wait for the stream to be ready (network request to Fish Audio)
+                // This runs in parallel with previous audio playback!
                 const stream = await streamPromise;
-                const reader = stream.getReader();
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    if (!value) continue;
+                for await (const chunk of stream) {
+                    // Check connection before sending
+                    if (ws.readyState !== WebSocket.OPEN) {
+                        // connection closed
+                        break;
+                    }
 
-                    // Check connection
-                    if (ws.readyState !== WebSocket.OPEN) break;
-
-                    // ESP32 buffer safety: chunks are naturally small from Fish Audio
-                    // But we enforce max chunk size and slight pacing to prevent overflows
+                    // Send directly (ESP32 buffer safe 512 bytes)
                     const MAX_CHUNK = 512;
-                    let chunkCount = 0;
-
-                    for (let i = 0; i < value.length; i += MAX_CHUNK) {
+                    for (let i = 0; i < chunk.length; i += MAX_CHUNK) {
                         if (ws.readyState !== WebSocket.OPEN) break;
-                        const subChunk = value.slice(i, i + MAX_CHUNK);
-                        try {
-                            ws.send(subChunk);
-                            chunkCount++;
-
-                            // Rate limit: yield every 4 chunks (approx 2KB)
-                            // This matches Python's logic to prevent ESP32 overflow
-                            if (chunkCount % 4 === 0) {
-                                await new Promise(r => setTimeout(r, 5));
-                            }
-                        } catch {
-                            break;
-                        }
+                        const subChunk = chunk.slice(i, i + MAX_CHUNK);
+                        ws.send(subChunk);
                     }
                 }
             } catch (e) {
@@ -185,37 +174,12 @@ async function handleWebSocket(request: Request): Promise<Response> {
             }
         }
 
-        processingTTS = false;
+        processingStream = false;
     }
 
-    // Helper: start TTS request immediately
-    function fetchTTS(text: string, voiceId: string): Promise<ReadableStream<Uint8Array>> {
-        console.log(`[TTS] Requesting: ${text.substring(0, 20)}...`);
-        return fetch("https://api.fish.audio/v1/tts", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${FISH_API_KEY}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                text: text,
-                reference_id: voiceId,
-                format: "pcm",
-                latency: "balanced",
-            }),
-        }).then(res => {
-            if (!res.ok) {
-                console.error(`[Fish API Error] Status: ${res.status}, Text: ${res.statusText}`);
-                res.text().then(t => console.error(`[Fish API Body] ${t}`));
-                throw new Error(`Fish API error: ${res.status}`);
-            }
-            return res.body!;
-        });
-    }
-
-    async function waitForTTSComplete(): Promise<void> {
-        while (processingTTS || ttsQueue.length > 0) {
-            await new Promise((r) => setTimeout(r, 100));
+    async function waitForAudioComplete(): Promise<void> {
+        while (processingStream || audioStreamQueue.length > 0) {
+            await new Promise((r) => setTimeout(r, 50));
         }
     }
 
@@ -228,22 +192,22 @@ async function handleWebSocket(request: Request): Promise<Response> {
             openaiWs.send(JSON.stringify({
                 type: "session.update",
                 session: {
-                    modalities: ["text"], // Text only (we use Fish Audio for output) = Faster & Cheaper
+                    modalities: ["text", "audio"],
                     instructions: config.system_prompt,
-                    voice: "shimmer", // Ignored for text-only but good to keep
+                    voice: "shimmer",
                     input_audio_format: "pcm16",
                     output_audio_format: "pcm16",
                     input_audio_transcription: { model: "whisper-1" },
                     turn_detection: {
                         type: "server_vad",
-                        threshold: 0.1,
-                        prefix_padding_ms: 0,
-                        silence_duration_ms: 600,
+                        threshold: 0.5, // Slightly higher threshold to prevent noise triggering
+                        prefix_padding_ms: 300,
+                        silence_duration_ms: 500,
                     },
                 },
             }));
 
-            console.log("[Session] Configured (Text Mode)");
+            console.log("[Session] Configured with VAD");
             console.log("*** Listening ***\n");
 
             // Handle OpenAI events
@@ -251,14 +215,16 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 const event = JSON.parse(data.toString());
                 const eventType = event.type;
 
-                // Log all events for debugging
-                if (!["response.audio.delta", "response.audio_transcript.delta"].includes(eventType)) {
+                if (!["input_audio_buffer.speech_started", "response.audio_transcript.delta", "response.audio.delta", "response.content_part.added", "rate_limits.updated"].includes(eventType)) {
                     console.log(`[Event] ${eventType}`);
                 }
 
                 switch (eventType) {
                     case "input_audio_buffer.speech_started":
                         console.log("Speech detected...");
+                        // Clear any pending audio when user interrupts
+                        sentenceBuffer = "";
+                        // Logic to clear queue could be added here (but careful with Promises)
                         break;
 
                     case "input_audio_buffer.speech_stopped":
@@ -267,10 +233,8 @@ async function handleWebSocket(request: Request): Promise<Response> {
 
                     case "conversation.item.input_audio_transcription.completed": {
                         const userText = event.transcript || "";
-                        console.log(`\nUser: ${userText}`);
-                        try {
-                            clientWs.send(JSON.stringify({ event: "transcription", text: userText }));
-                        } catch { /* ignore */ }
+                        if (userText) console.log(`\nUser: ${userText}`);
+                        // Send transcription to client (optional)
                         break;
                     }
 
@@ -278,7 +242,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         console.log("Response generation started...");
                         isPlaying = true;
                         sentenceBuffer = "";
-                        ttsQueue.length = 0; // Clear pending
+                        // Note: We don't clear queue here because it might be a continuation
                         try {
                             clientWs.send(JSON.stringify({
                                 event: "audio_start",
@@ -288,34 +252,45 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         } catch { /* ignore */ }
                         break;
 
-                    case "response.text.delta": {
+                    case "response.audio_transcript.delta": {
                         const delta = event.delta || "";
                         sentenceBuffer += delta;
 
-                        const sentenceMatch = sentenceBuffer.match(/^(.+?[。！？、]+)/);
+                        // Sentence boundary detection
+                        // Check for Japanese punctuation or newline
+                        const sentenceMatch = sentenceBuffer.match(/^(.+?[。！？、\n]+)/);
                         if (sentenceMatch) {
                             const sentence = sentenceMatch[1];
                             sentenceBuffer = sentenceBuffer.slice(sentence.length);
 
-                            // EAGER FETCH: Start request immediately!
-                            const promise = fetchTTS(sentence, config.voice_id);
-                            ttsQueue.push(promise);
+                            if (sentence.trim()) {
+                                console.log(`[TTS] Requesting: ${sentence.trim()}`);
 
-                            // Start processor if idle
-                            processTTSQueue(clientWs);
+                                // FIRE AND FORGET - Start fetching immediately!
+                                // This Promise will start the network request NOW
+                                // We treat streamTTS as a regular async function returning a generator
+                                const streamPromise = Promise.resolve(streamTTS(sentence, config.voice_id));
+
+                                audioStreamQueue.push(streamPromise);
+
+                                // Ensure processor is running
+                                processAudioStreamQueue(clientWs);
+                            }
                         }
                         break;
                     }
 
                     case "response.done": {
                         if (sentenceBuffer.trim()) {
-                            console.log(`[TTS] Queue (final): ${sentenceBuffer.trim()}`);
-                            const promise = fetchTTS(sentenceBuffer.trim(), config.voice_id);
-                            ttsQueue.push(promise);
-                            processTTSQueue(clientWs);
+                            const sentence = sentenceBuffer.trim();
+                            console.log(`[TTS] Requesting (final): ${sentence}`);
+                            const streamPromise = Promise.resolve(streamTTS(sentence, config.voice_id));
+                            audioStreamQueue.push(streamPromise);
+                            processAudioStreamQueue(clientWs);
                             sentenceBuffer = "";
                         }
-                        await waitForTTSComplete();
+
+                        await waitForAudioComplete();
                         try {
                             clientWs.send(JSON.stringify({ event: "audio_end" }));
                             clientWs.send(JSON.stringify({ event: "listening" }));
@@ -330,7 +305,6 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         break;
                 }
             });
-
             openaiWs.on("close", () => {
                 console.log("[OpenAI] Disconnected");
             });
