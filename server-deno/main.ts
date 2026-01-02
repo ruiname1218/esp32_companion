@@ -261,13 +261,13 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         } catch { /* ignore */ }
                         break;
 
-                    case "response.audio_transcript.delta": {
+                    case "response.text.delta": {
                         const delta = event.delta || "";
                         sentenceBuffer += delta;
 
                         // Sentence boundary detection
                         // Check for Japanese punctuation or newline
-                        const sentenceMatch = sentenceBuffer.match(/^(.+?[。！？、\n]+)/);
+                        const sentenceMatch = sentenceBuffer.match(/^(.+?[。！?？\n]+)/);
                         if (sentenceMatch) {
                             const sentence = sentenceMatch[1];
                             sentenceBuffer = sentenceBuffer.slice(sentence.length);
@@ -277,7 +277,6 @@ async function handleWebSocket(request: Request): Promise<Response> {
 
                                 // FIRE AND FORGET - Start fetching immediately!
                                 // This Promise will start the network request NOW
-                                // We treat streamTTS as a regular async function returning a generator
                                 const streamPromise = Promise.resolve(streamTTS(sentence, config.voice_id));
 
                                 audioStreamQueue.push(streamPromise);
