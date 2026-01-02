@@ -4,10 +4,22 @@
 // 
 // このファイルを config.h にコピーして編集してください:
 //   cp config.h.example config.h
-
+//
+// ⚠️ config.h は .gitignore に含まれているため、
+//    GitHubにpushされることはありません。
 // ============================================
 
+// ------------ サーバー設定（必須）------------
 
+// === ローカル開発時 ===
+// const char* SERVER_HOST = "192.168.x.x";  // あなたのPCのIP
+// const int SERVER_PORT = 8000;
+// // #define USE_SSL  // ローカルではSSL不要
+
+// === Deno Deploy 本番環境 ===
+const char* SERVER_HOST = "your-project.deno.dev";  // Deno Deployのドメイン
+const int SERVER_PORT = 443;  // HTTPSポート
+#define USE_SSL  // Deno DeployはSSL必須！
 
 // ------------ WiFi設定（オプション）------------
 // WiFiはCaptive Portalで設定可能ですが、

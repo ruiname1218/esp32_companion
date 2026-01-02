@@ -1,0 +1,15 @@
+{
+    "tasks": {
+        "dev": "deno run -A --watch main.ts",
+        "start": "deno run -A main.ts"
+    },
+    "imports": {
+        "std/": "https://deno.land/std@0.220.0/",
+        "ws": "npm:ws@8.16.0"
+    },
+    "compilerOptions": {
+        "lib": [
+            "deno.window"
+        ]
+    }
+}

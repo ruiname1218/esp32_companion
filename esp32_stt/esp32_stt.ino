@@ -347,7 +347,16 @@ void connectWebSocket() {
   // Construct path with query param
   String path = "/ws?device_id=" + mac;
   
-  webSocket.begin(SERVER_HOST, SERVER_PORT, path.c_str());
+  #ifdef USE_SSL
+    // SSL/WSS connection for Deno Deploy / production
+    Serial.println("[WS] Using SSL (wss://)");
+    webSocket.beginSSL(SERVER_HOST, SERVER_PORT, path.c_str());
+  #else
+    // Plain WebSocket for local development
+    Serial.println("[WS] Using plain WebSocket (ws://)");
+    webSocket.begin(SERVER_HOST, SERVER_PORT, path.c_str());
+  #endif
+  
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(3000);
   webSocket.enableHeartbeat(30000, 10000, 3);

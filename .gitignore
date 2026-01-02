@@ -41,3 +41,6 @@ server/serviceAccountKey.json
 
 # Local settings
 server/settings.json
+
+# Deno server
+server-deno/.env

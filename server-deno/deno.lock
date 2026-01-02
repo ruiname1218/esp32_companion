@@ -1,0 +1,16 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:ws@8.16.0": "8.16.0"
+  },
+  "npm": {
+    "ws@8.16.0": {
+      "integrity": "sha512-HS0c//TP7Ina87TfiPUz1rQzMhHrl/SG2guqRcTOIUYD2q8uhUdNHZYJUaQ8aTGPzCh+c6oawMKW35nFl1dxyQ=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:ws@8.16.0"
+    ]
+  }
+}
