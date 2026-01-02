@@ -160,13 +160,18 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         break;
                     }
 
-                    // Send directly (Let TCP/IP handle fragmentation)
-                    // Python version does not manually fragment, so we shouldn't either
-                    // This reduces loop overhead significantly
-                    try {
-                        ws.send(chunk);
-                    } catch {
-                        break;
+                    // Split into chunks to prevent ESP32 buffer overflow / WDT timeout
+                    // SSL processing on ESP32 requires significant memory/time
+                    const MAX_CHUNK = 1024;
+                    for (let i = 0; i < chunk.length; i += MAX_CHUNK) {
+                        if (ws.readyState !== WebSocket.OPEN) break;
+                        const subChunk = chunk.slice(i, i + MAX_CHUNK);
+                        try {
+                            ws.send(subChunk);
+                        } catch (e) {
+                            console.error("[TTS Send Error]", e);
+                            break;
+                        }
                     }
                 }
             } catch (e) {
