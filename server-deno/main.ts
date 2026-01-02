@@ -366,12 +366,10 @@ console.log(`
 `);
 
 if (!OPENAI_API_KEY) {
-    console.error("❌ OPENAI_API_KEY not set!");
-    Deno.exit(1);
+    console.error("⚠️  OPENAI_API_KEY not set! Server will not work properly.");
 }
 if (!FISH_API_KEY) {
-    console.error("❌ FISH_API_KEY not set!");
-    Deno.exit(1);
+    console.error("⚠️  FISH_API_KEY not set! TTS will not work properly.");
 }
 
 Deno.serve({ port: PORT }, handleRequest);
