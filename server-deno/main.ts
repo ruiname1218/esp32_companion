@@ -84,7 +84,7 @@ function connectToOpenAI(): Promise<WebSocketClient> {
 
 // ============ Fish Audio TTS ============
 
-async function streamTTS(text: string, voiceId: string): Promise<ReadableStream<Uint8Array>> {
+async function streamTTS(text: string, voiceId: string, retryCount = 0): Promise<ReadableStream<Uint8Array>> {
     const response = await fetch(FISH_TTS_URL, {
         method: "POST",
         headers: {
@@ -98,6 +98,16 @@ async function streamTTS(text: string, voiceId: string): Promise<ReadableStream<
             latency: "balanced",
         }),
     });
+
+    if (response.status === 429) {
+        if (retryCount >= 3) {
+            throw new Error(`TTS Rate Limit Exceeded after ${retryCount} retries`);
+        }
+        const waitTime = 1000 * Math.pow(2, retryCount); // 1s, 2s, 4s
+        console.warn(`[TTS] Rate limit 429, retrying in ${waitTime}ms...`);
+        await new Promise(r => setTimeout(r, waitTime));
+        return streamTTS(text, voiceId, retryCount + 1);
+    }
 
     if (!response.ok) {
         throw new Error(`TTS Error: ${response.status} ${await response.text()}`);
@@ -131,9 +141,10 @@ async function handleWebSocket(request: Request): Promise<Response> {
     let isPlaying = false;
     let sentenceBuffer = "";
 
-    // Audio Streaming Queue (Pipelining)
-    // We store Promises that resolve to the audio ReadableStream
-    const audioStreamQueue: Promise<ReadableStream<Uint8Array>>[] = [];
+    // Audio Streaming Queue (Sequential Processing)
+    // We store task functions that return the audio ReadableStream
+    // This delays fetch until previous audio is finished (Strict Sequential)
+    const audioStreamQueue: (() => Promise<ReadableStream<Uint8Array>>)[] = [];
     let processingStream = false;
 
     // TTS stream processor
@@ -142,11 +153,12 @@ async function handleWebSocket(request: Request): Promise<Response> {
         processingStream = true;
 
         while (audioStreamQueue.length > 0) {
-            const streamPromise = audioStreamQueue.shift()!;
+            const streamTask = audioStreamQueue.shift()!;
 
             try {
-                // Wait for headers (prefetching happened in background)
-                const stream = await streamPromise;
+                // Execute fetch ONLY when it's turn (Sequential)
+                // This prevents 429 errors by naturally spacing out requests
+                const stream = await streamTask();
 
                 // Read from stream
                 for await (const chunk of stream) {
@@ -275,11 +287,11 @@ async function handleWebSocket(request: Request): Promise<Response> {
                             if (sentence.trim()) {
                                 console.log(`[TTS] Requesting: ${sentence.trim()}`);
 
-                                // FIRE AND FORGET - Start fetching immediately!
-                                // This Promise will start the network request NOW
-                                const streamPromise = Promise.resolve(streamTTS(sentence, config.voice_id));
+                                // Create Task Factory (Lazy Execution)
+                                // This ensures strict sequential processing to match Python behavior
+                                const streamTask = () => streamTTS(sentence, config.voice_id);
 
-                                audioStreamQueue.push(streamPromise);
+                                audioStreamQueue.push(streamTask);
 
                                 // Ensure processor is running
                                 processAudioStreamQueue(clientWs);
@@ -292,8 +304,8 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         if (sentenceBuffer.trim()) {
                             const sentence = sentenceBuffer.trim();
                             console.log(`[TTS] Requesting (final): ${sentence}`);
-                            const streamPromise = Promise.resolve(streamTTS(sentence, config.voice_id));
-                            audioStreamQueue.push(streamPromise);
+                            const streamTask = () => streamTTS(sentence, config.voice_id);
+                            audioStreamQueue.push(streamTask);
                             processAudioStreamQueue(clientWs);
                             sentenceBuffer = "";
                         }
