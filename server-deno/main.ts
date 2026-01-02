@@ -158,12 +158,26 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     // Check connection
                     if (ws.readyState !== WebSocket.OPEN) break;
 
-                    // Send immediately (Python parity)
                     // ESP32 buffer safety: chunks are naturally small from Fish Audio
-                    try {
-                        ws.send(value);
-                    } catch {
-                        break;
+                    // But we enforce max chunk size and slight pacing to prevent overflows
+                    const MAX_CHUNK = 512;
+                    let chunkCount = 0;
+
+                    for (let i = 0; i < value.length; i += MAX_CHUNK) {
+                        if (ws.readyState !== WebSocket.OPEN) break;
+                        const subChunk = value.slice(i, i + MAX_CHUNK);
+                        try {
+                            ws.send(subChunk);
+                            chunkCount++;
+
+                            // Rate limit: yield every 4 chunks (approx 2KB)
+                            // This matches Python's logic to prevent ESP32 overflow
+                            if (chunkCount % 4 === 0) {
+                                await new Promise(r => setTimeout(r, 5));
+                            }
+                        } catch {
+                            break;
+                        }
                     }
                 }
             } catch (e) {
