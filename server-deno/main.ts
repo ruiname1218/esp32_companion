@@ -162,6 +162,9 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         const subChunk = chunk.slice(i, i + MAX_CHUNK);
                         try {
                             ws.send(subChunk);
+                            // Rate Limiting: Slight delay to prevent flooding ESP32 network stack
+                            // 1024B / 2ms ~= 500KB/s (PLENTY for audio, but gentle on ESP32)
+                            await new Promise(r => setTimeout(r, 2));
                         } catch (e) {
                             console.error("[TTS Send Error]", e);
                             break;
