@@ -157,16 +157,16 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 for await (const chunk of stream) {
                     // Check connection before sending
                     if (ws.readyState !== WebSocket.OPEN) {
-                        // connection closed
                         break;
                     }
 
-                    // Send directly (ESP32 buffer safe 512 bytes)
-                    const MAX_CHUNK = 512;
-                    for (let i = 0; i < chunk.length; i += MAX_CHUNK) {
-                        if (ws.readyState !== WebSocket.OPEN) break;
-                        const subChunk = chunk.slice(i, i + MAX_CHUNK);
-                        ws.send(subChunk);
+                    // Send directly (Let TCP/IP handle fragmentation)
+                    // Python version does not manually fragment, so we shouldn't either
+                    // This reduces loop overhead significantly
+                    try {
+                        ws.send(chunk);
+                    } catch {
+                        break;
                     }
                 }
             } catch (e) {
@@ -387,8 +387,8 @@ console.log(`
 ╔════════════════════════════════════════════╗
 ║     Magoo AI Companion - Deno Server       ║
 ╠════════════════════════════════════════════╣
-║  WebSocket: ws://localhost:${PORT}/ws        ║
-║  Health:    http://localhost:${PORT}/health  ║
+║  Status:    Running                        ║
+║  Platform:  Deno                           ║
 ╚════════════════════════════════════════════╝
 `);
 
