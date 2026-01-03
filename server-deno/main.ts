@@ -152,6 +152,10 @@ async function handleWebSocket(request: Request): Promise<Response> {
     let isPlaying = false;
     let sentenceBuffer = "";
 
+    // Conversation Sliding Window - Keep only recent N items
+    const MAX_CONVERSATION_ITEMS = 10; // Keep last 10 conversation items (5 exchanges)
+    const conversationItemIds: string[] = [];
+
     // Audio Streaming Queue (Sequential Processing)
     // We store task functions that return the audio ReadableStream
     // This delays fetch until previous audio is finished (Strict Sequential)
@@ -237,6 +241,28 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         case "input_audio_buffer.speech_stopped":
                             console.log("Speech ended, processing...");
                             break;
+
+                        case "conversation.item.created": {
+                            // Track conversation items for sliding window
+                            const itemId = event.item?.id;
+                            if (itemId) {
+                                conversationItemIds.push(itemId);
+                                console.log(`[Conversation] Item added: ${itemId} (Total: ${conversationItemIds.length})`);
+
+                                // Delete oldest items if exceeding limit
+                                while (conversationItemIds.length > MAX_CONVERSATION_ITEMS) {
+                                    const oldestId = conversationItemIds.shift();
+                                    if (oldestId && openaiWs?.readyState === WebSocketClient.OPEN) {
+                                        openaiWs.send(JSON.stringify({
+                                            type: "conversation.item.delete",
+                                            item_id: oldestId
+                                        }));
+                                        console.log(`[Conversation] Deleted old item: ${oldestId}`);
+                                    }
+                                }
+                            }
+                            break;
+                        }
 
                         case "conversation.item.input_audio_transcription.completed": {
                             const userText = event.transcript || "";
@@ -333,7 +359,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                                     },
                                     turn_detection: {
                                         type: "server_vad",
-                                        threshold: 0.1,
+                                        threshold: 0.3,
                                         prefix_padding_ms: 300,
                                         silence_duration_ms: 700
                                     }
@@ -365,7 +391,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     },
                     turn_detection: {
                         type: "server_vad",
-                        threshold: 0.1,
+                        threshold: 0.3,
                         prefix_padding_ms: 300,
                         silence_duration_ms: 700
                     }
