@@ -334,7 +334,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                                     turn_detection: {
                                         type: "server_vad",
                                         threshold: 0.1,
-                                        prefix_padding_ms: 0,
+                                        prefix_padding_ms: 300,
                                         silence_duration_ms: 700
                                     }
                                 },
@@ -366,7 +366,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     turn_detection: {
                         type: "server_vad",
                         threshold: 0.1,
-                        prefix_padding_ms: 0,
+                        prefix_padding_ms: 300,
                         silence_duration_ms: 700
                     }
                 },
