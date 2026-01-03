@@ -347,78 +347,94 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 session: {
                     modalities: ["text"],
                     instructions: config.system_prompt,
-
+                    input_audio_format: "pcm16",
+                    input_audio_transcription: {
+                        model: "whisper-1",
+                        language: "ja"
+                    },
+                    turn_detection: {
+                        type: "server_vad",
+                        threshold: 0.1,
+                        prefix_padding_ms: 0,
+                        silence_duration_ms: 700
+                    }
                 },
             }));
 
-            // Forward audio from ESP32 to OpenAI (optimized - no debug logging)
-            clientWs.onmessage = async (event: MessageEvent) => {
-                // Handle different data types
-                let audioData: Uint8Array | null = null;
+            console.log("[Session] Configured with VAD");
+            console.log("*** Listening ***\n");
 
-                if (event.data instanceof ArrayBuffer) {
-                    audioData = new Uint8Array(event.data);
-                } else if (event.data instanceof Uint8Array) {
-                    audioData = event.data;
-                } else if (event.data instanceof Blob) {
-                    audioData = new Uint8Array(await event.data.arrayBuffer());
-                }
+        } catch (e) {
+            console.error("[Setup Error]", e);
+        }
+    };
 
-                if (audioData && openaiWs?.readyState === WebSocketClient.OPEN && !isPlaying) {
-                    const base64Audio = btoa(String.fromCharCode(...audioData));
-                    openaiWs.send(JSON.stringify({
-                        type: "input_audio_buffer.append",
-                        audio: base64Audio,
-                    }));
-                }
-            };
+    // Forward audio from ESP32 to OpenAI (optimized - no debug logging)
+    clientWs.onmessage = async (event: MessageEvent) => {
+        // Handle different data types
+        let audioData: Uint8Array | null = null;
 
-
-
-            clientWs.onclose = () => {
-                console.log(`[Device] Disconnected: ${deviceId}`);
-                openaiWs?.close();
-            };
-
-            clientWs.onerror = (e: Event) => {
-                console.error(`[Device Error] ${deviceId}:`, e);
-            };
-
-            return response;
+        if (event.data instanceof ArrayBuffer) {
+            audioData = new Uint8Array(event.data);
+        } else if (event.data instanceof Uint8Array) {
+            audioData = event.data;
+        } else if (event.data instanceof Blob) {
+            audioData = new Uint8Array(await event.data.arrayBuffer());
         }
 
-    // ============ HTTP Handler ============
-
-    function handleRequest(request: Request): Promise<Response> | Response {
-            const url = new URL(request.url);
-            const path = url.pathname;
-
-            if (path === "/ws" && request.headers.get("upgrade") === "websocket") {
-                return handleWebSocket(request);
-            }
-
-            if (path === "/health") {
-                return new Response(JSON.stringify({ status: "ok", server: "deno" }), {
-                    headers: { "Content-Type": "application/json" },
-                });
-            }
-
-            if (path === "/") {
-                return new Response(JSON.stringify({
-                    message: "Magoo Deno Server",
-                    version: "1.0.0",
-                    endpoints: ["/ws", "/health"],
-                }), {
-                    headers: { "Content-Type": "application/json" },
-                });
-            }
-
-            return new Response("Not Found", { status: 404 });
+        if (audioData && openaiWs?.readyState === WebSocketClient.OPEN && !isPlaying) {
+            const base64Audio = btoa(String.fromCharCode(...audioData));
+            openaiWs.send(JSON.stringify({
+                type: "input_audio_buffer.append",
+                audio: base64Audio,
+            }));
         }
+    };
 
-        // ============ Server Start ============
+    clientWs.onclose = () => {
+        console.log(`[Device] Disconnected: ${deviceId}`);
+        openaiWs?.close();
+    };
 
-        console.log(`
+    clientWs.onerror = (e: Event) => {
+        console.error(`[Device Error] ${deviceId}:`, e);
+    };
+
+    return response;
+}
+
+// ============ HTTP Handler ============
+
+function handleRequest(request: Request): Promise<Response> | Response {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    if (path === "/ws" && request.headers.get("upgrade") === "websocket") {
+        return handleWebSocket(request);
+    }
+
+    if (path === "/health") {
+        return new Response(JSON.stringify({ status: "ok", server: "deno" }), {
+            headers: { "Content-Type": "application/json" },
+        });
+    }
+
+    if (path === "/") {
+        return new Response(JSON.stringify({
+            message: "Magoo Deno Server",
+            version: "1.0.0",
+            endpoints: ["/ws", "/health"],
+        }), {
+            headers: { "Content-Type": "application/json" },
+        });
+    }
+
+    return new Response("Not Found", { status: 404 });
+}
+
+// ============ Server Start ============
+
+console.log(`
 ╔════════════════════════════════════════════╗
 ║     Magoo AI Companion - Deno Server       ║
 ╠════════════════════════════════════════════╣
@@ -427,11 +443,11 @@ async function handleWebSocket(request: Request): Promise<Response> {
 ╚════════════════════════════════════════════╝
 `);
 
-        if (!OPENAI_API_KEY) {
-            console.error("⚠️  OPENAI_API_KEY not set! Server will not work properly.");
-        }
-        if (!FISH_API_KEY) {
-            console.error("⚠️  FISH_API_KEY not set! TTS will not work properly.");
-        }
+if (!OPENAI_API_KEY) {
+    console.error("⚠️  OPENAI_API_KEY not set! Server will not work properly.");
+}
+if (!FISH_API_KEY) {
+    console.error("⚠️  FISH_API_KEY not set! TTS will not work properly.");
+}
 
-        Deno.serve({ port: PORT }, handleRequest);
+Deno.serve({ port: PORT }, handleRequest);
