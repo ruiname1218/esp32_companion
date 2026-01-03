@@ -205,8 +205,141 @@ async function handleWebSocket(request: Request): Promise<Response> {
 
     clientWs.onopen = async () => {
         try {
+            // Handle OpenAI events (Defined before connection to capture early events)
+            const setupOpenAIHandlers = (ws: WebSocketClient) => {
+                ws.on("message", async (data: WebSocketClient.RawData) => {
+                    const event = JSON.parse(data.toString());
+                    const eventType = event.type;
+
+                    if (!["input_audio_buffer.speech_started", "response.audio_transcript.delta", "response.audio.delta", "response.content_part.added", "rate_limits.updated"].includes(eventType)) {
+                        console.log(`[Event] ${eventType}`);
+                    }
+
+                    switch (eventType) {
+                        case "input_audio_buffer.speech_started":
+                            console.log("Speech detected...");
+                            // Clear any pending audio when user interrupts
+                            sentenceBuffer = "";
+                            // Logic to clear queue could be added here (but careful with Promises)
+                            break;
+
+                        case "input_audio_buffer.speech_stopped":
+                            console.log("Speech ended, processing...");
+                            break;
+
+                        case "conversation.item.input_audio_transcription.completed": {
+                            const userText = event.transcript || "";
+                            if (userText) console.log(`\nUser: ${userText}`);
+                            // Send transcription to client (optional)
+                            break;
+                        }
+
+                        case "response.output_item.added":
+                            console.log("Response generation started...");
+                            isPlaying = true;
+                            sentenceBuffer = "";
+                            // Note: We don't clear queue here because it might be a continuation
+                            try {
+                                clientWs.send(JSON.stringify({
+                                    event: "audio_start",
+                                    sample_rate: 44100,
+                                    format: "pcm",
+                                }));
+                            } catch { /* ignore */ }
+                            break;
+
+                        case "response.text.delta": {
+                            const delta = event.delta || "";
+                            sentenceBuffer += delta;
+
+                            // Sentence boundary detection
+                            // Check for Japanese punctuation or newline
+                            const sentenceMatch = sentenceBuffer.match(/^(.+?[。！?？\n]+)/);
+                            if (sentenceMatch) {
+                                const sentence = sentenceMatch[1];
+                                sentenceBuffer = sentenceBuffer.slice(sentence.length);
+
+                                if (sentence.trim()) {
+                                    console.log(`[TTS] Requesting: ${sentence.trim()}`);
+
+                                    // Create Task Factory (Lazy Execution)
+                                    // This ensures strict sequential processing to match Python behavior
+                                    const streamTask = () => streamTTS(sentence, config.voice_id);
+
+                                    audioStreamQueue.push(streamTask);
+
+                                    // Ensure processor is running
+                                    processAudioStreamQueue(clientWs);
+                                }
+                            }
+                            break;
+                        }
+
+                        case "response.done": {
+                            if (sentenceBuffer.trim()) {
+                                const sentence = sentenceBuffer.trim();
+                                console.log(`[TTS] Requesting (final): ${sentence}`);
+                                const streamTask = () => streamTTS(sentence, config.voice_id);
+                                audioStreamQueue.push(streamTask);
+                                processAudioStreamQueue(clientWs);
+                                sentenceBuffer = "";
+                            }
+                            await waitForAudioComplete();
+                            try {
+                                if (clientWs.readyState === WebSocket.OPEN) {
+                                    clientWs.send(JSON.stringify({ event: "audio_end" }));
+                                    clientWs.send(JSON.stringify({ event: "listening" }));
+                                    console.log("*** Listening ***\n");
+                                }
+                            } catch { /* ignore */ }
+                            isPlaying = false;
+                            break;
+                        }
+
+                        case "error": {
+                            console.error("[OpenAI Error]", event.error);
+                            break;
+                        }
+                    }
+                });
+
+                ws.on("close", async () => {
+                    console.warn("[OpenAI] Disconnected. Reconnecting...");
+                    if (clientWs.readyState === WebSocket.OPEN) {
+                        try {
+                            openaiWs = await connectToOpenAI();
+                            setupOpenAIHandlers(openaiWs);
+                            // Re-configure session
+                            openaiWs.send(JSON.stringify({
+                                type: "session.update",
+                                session: {
+                                    modalities: ["text"],
+                                    instructions: config.system_prompt,
+                                    input_audio_format: "pcm16",
+                                    input_audio_transcription: {
+                                        model: "whisper-1",
+                                        language: "ja"
+                                    },
+                                    turn_detection: {
+                                        type: "server_vad",
+                                        threshold: 0.1,
+                                        prefix_padding_ms: 0,
+                                        silence_duration_ms: 700
+                                    }
+                                },
+                            }));
+                            console.log("[OpenAI] Reconnected!");
+                        } catch (e) {
+                            console.error("[OpenAI] Reconnection failed:", e);
+                            clientWs.close(); // Give up if reconnection fails
+                        }
+                    }
+                });
+            };
+
             // Connect to OpenAI with npm:ws (supports headers)
             openaiWs = await connectToOpenAI();
+            setupOpenAIHandlers(openaiWs);
 
             // Configure session
             openaiWs.send(JSON.stringify({
@@ -214,192 +347,70 @@ async function handleWebSocket(request: Request): Promise<Response> {
                 session: {
                     modalities: ["text"],
                     instructions: config.system_prompt,
-                    input_audio_format: "pcm16",
-                    input_audio_transcription: {
-                        model: "whisper-1",
-                        language: "ja"
-                    },
-                    turn_detection: {
-                        type: "server_vad",
-                        threshold: 0.1,          // Lower = more sensitive to quiet speech
-                        prefix_padding_ms: 0,    // Capture audio before speech detected
-                        silence_duration_ms: 700 // Wait for speech to truly end
-                    }
-                },
-            }));
 
-            console.log("[Session] Configured with VAD");
-            console.log("*** Listening ***\n");
 
-            // Handle OpenAI events
-            openaiWs.on("message", async (data: WebSocketClient.RawData) => {
-                const event = JSON.parse(data.toString());
-                const eventType = event.type;
+                    // Forward audio from ESP32 to OpenAI (optimized - no debug logging)
+                    clientWs.onmessage = async (event: MessageEvent) => {
+                        // Handle different data types
+                        let audioData: Uint8Array | null = null;
 
-                if (!["input_audio_buffer.speech_started", "response.audio_transcript.delta", "response.audio.delta", "response.content_part.added", "rate_limits.updated"].includes(eventType)) {
-                    console.log(`[Event] ${eventType}`);
-                }
+                        if (event.data instanceof ArrayBuffer) {
+                            audioData = new Uint8Array(event.data);
+                        } else if (event.data instanceof Uint8Array) {
+                            audioData = event.data;
+                        } else if (event.data instanceof Blob) {
+                            audioData = new Uint8Array(await event.data.arrayBuffer());
+                        }
 
-                switch (eventType) {
-                    case "input_audio_buffer.speech_started":
-                        console.log("Speech detected...");
-                        // Clear any pending audio when user interrupts
-                        sentenceBuffer = "";
-                        // Logic to clear queue could be added here (but careful with Promises)
-                        break;
-
-                    case "input_audio_buffer.speech_stopped":
-                        console.log("Speech ended, processing...");
-                        break;
-
-                    case "conversation.item.input_audio_transcription.completed": {
-                        const userText = event.transcript || "";
-                        if (userText) console.log(`\nUser: ${userText}`);
-                        // Send transcription to client (optional)
-                        break;
-                    }
-
-                    case "response.output_item.added":
-                        console.log("Response generation started...");
-                        isPlaying = true;
-                        sentenceBuffer = "";
-                        // Note: We don't clear queue here because it might be a continuation
-                        try {
-                            clientWs.send(JSON.stringify({
-                                event: "audio_start",
-                                sample_rate: 44100,
-                                format: "pcm",
+                        if (audioData && openaiWs?.readyState === WebSocketClient.OPEN && !isPlaying) {
+                            const base64Audio = btoa(String.fromCharCode(...audioData));
+                            openaiWs.send(JSON.stringify({
+                                type: "input_audio_buffer.append",
+                                audio: base64Audio,
                             }));
-                        } catch { /* ignore */ }
-                        break;
-
-                    case "response.text.delta": {
-                        const delta = event.delta || "";
-                        sentenceBuffer += delta;
-
-                        // Sentence boundary detection
-                        // Check for Japanese punctuation or newline
-                        const sentenceMatch = sentenceBuffer.match(/^(.+?[。！?？\n]+)/);
-                        if (sentenceMatch) {
-                            const sentence = sentenceMatch[1];
-                            sentenceBuffer = sentenceBuffer.slice(sentence.length);
-
-                            if (sentence.trim()) {
-                                console.log(`[TTS] Requesting: ${sentence.trim()}`);
-
-                                // Create Task Factory (Lazy Execution)
-                                // This ensures strict sequential processing to match Python behavior
-                                const streamTask = () => streamTTS(sentence, config.voice_id);
-
-                                audioStreamQueue.push(streamTask);
-
-                                // Ensure processor is running
-                                processAudioStreamQueue(clientWs);
-                            }
                         }
-                        break;
-                    }
+                    };
 
-                    case "response.done": {
-                        if (sentenceBuffer.trim()) {
-                            const sentence = sentenceBuffer.trim();
-                            console.log(`[TTS] Requesting (final): ${sentence}`);
-                            const streamTask = () => streamTTS(sentence, config.voice_id);
-                            audioStreamQueue.push(streamTask);
-                            processAudioStreamQueue(clientWs);
-                            sentenceBuffer = "";
-                        }
+                    clientWs.onclose = () => {
+                        console.log(`[Device] Disconnected: ${deviceId}`);
+                        openaiWs?.close();
+                    };
 
-                        await waitForAudioComplete();
-                        try {
-                            clientWs.send(JSON.stringify({ event: "audio_end" }));
-                            clientWs.send(JSON.stringify({ event: "listening" }));
-                        } catch { /* ignore */ }
-                        isPlaying = false;
-                        console.log("\n*** Listening ***\n");
-                        break;
-                    }
+                    clientWs.onerror = (e: Event) => {
+                        console.error(`[Device Error] ${deviceId}:`, e);
+                    };
 
-                    case "error":
-                        console.error("[OpenAI Error]", event.error);
-                        break;
+                    return response;
                 }
-            });
-            openaiWs.on("close", () => {
-                console.log("[OpenAI] Disconnected");
-            });
-
-            openaiWs.on("error", (err: Error) => {
-                console.error("[OpenAI] Error:", err.message);
-            });
-
-        } catch (e) {
-            console.error("[Setup Error]", e);
-        }
-    };
-
-    // Forward audio from ESP32 to OpenAI (optimized - no debug logging)
-    clientWs.onmessage = async (event: MessageEvent) => {
-        // Handle different data types
-        let audioData: Uint8Array | null = null;
-
-        if (event.data instanceof ArrayBuffer) {
-            audioData = new Uint8Array(event.data);
-        } else if (event.data instanceof Uint8Array) {
-            audioData = event.data;
-        } else if (event.data instanceof Blob) {
-            audioData = new Uint8Array(await event.data.arrayBuffer());
-        }
-
-        if (audioData && openaiWs?.readyState === WebSocketClient.OPEN && !isPlaying) {
-            const base64Audio = btoa(String.fromCharCode(...audioData));
-            openaiWs.send(JSON.stringify({
-                type: "input_audio_buffer.append",
-                audio: base64Audio,
-            }));
-        }
-    };
-
-    clientWs.onclose = () => {
-        console.log(`[Device] Disconnected: ${deviceId}`);
-        openaiWs?.close();
-    };
-
-    clientWs.onerror = (e: Event) => {
-        console.error(`[Device Error] ${deviceId}:`, e);
-    };
-
-    return response;
-}
 
 // ============ HTTP Handler ============
 
 function handleRequest(request: Request): Promise<Response> | Response {
-    const url = new URL(request.url);
-    const path = url.pathname;
+                const url = new URL(request.url);
+                const path = url.pathname;
 
-    if (path === "/ws" && request.headers.get("upgrade") === "websocket") {
-        return handleWebSocket(request);
-    }
+                if(path === "/ws" && request.headers.get("upgrade") === "websocket") {
+                return handleWebSocket(request);
+            }
 
     if (path === "/health") {
-        return new Response(JSON.stringify({ status: "ok", server: "deno" }), {
-            headers: { "Content-Type": "application/json" },
-        });
-    }
+                return new Response(JSON.stringify({ status: "ok", server: "deno" }), {
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
 
-    if (path === "/") {
-        return new Response(JSON.stringify({
-            message: "Magoo Deno Server",
-            version: "1.0.0",
-            endpoints: ["/ws", "/health"],
-        }), {
-            headers: { "Content-Type": "application/json" },
-        });
-    }
+            if (path === "/") {
+                return new Response(JSON.stringify({
+                    message: "Magoo Deno Server",
+                    version: "1.0.0",
+                    endpoints: ["/ws", "/health"],
+                }), {
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
 
-    return new Response("Not Found", { status: 404 });
-}
+            return new Response("Not Found", { status: 404 });
+        }
 
 // ============ Server Start ============
 
@@ -412,11 +423,11 @@ console.log(`
 ╚════════════════════════════════════════════╝
 `);
 
-if (!OPENAI_API_KEY) {
-    console.error("⚠️  OPENAI_API_KEY not set! Server will not work properly.");
-}
-if (!FISH_API_KEY) {
-    console.error("⚠️  FISH_API_KEY not set! TTS will not work properly.");
-}
+        if (!OPENAI_API_KEY) {
+            console.error("⚠️  OPENAI_API_KEY not set! Server will not work properly.");
+        }
+        if (!FISH_API_KEY) {
+            console.error("⚠️  FISH_API_KEY not set! TTS will not work properly.");
+        }
 
-Deno.serve({ port: PORT }, handleRequest);
+        Deno.serve({ port: PORT }, handleRequest);
