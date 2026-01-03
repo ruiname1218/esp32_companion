@@ -348,52 +348,56 @@ async function handleWebSocket(request: Request): Promise<Response> {
                     modalities: ["text"],
                     instructions: config.system_prompt,
 
+                },
+            }));
 
-                    // Forward audio from ESP32 to OpenAI (optimized - no debug logging)
-                    clientWs.onmessage = async (event: MessageEvent) => {
-                        // Handle different data types
-                        let audioData: Uint8Array | null = null;
+            // Forward audio from ESP32 to OpenAI (optimized - no debug logging)
+            clientWs.onmessage = async (event: MessageEvent) => {
+                // Handle different data types
+                let audioData: Uint8Array | null = null;
 
-                        if (event.data instanceof ArrayBuffer) {
-                            audioData = new Uint8Array(event.data);
-                        } else if (event.data instanceof Uint8Array) {
-                            audioData = event.data;
-                        } else if (event.data instanceof Blob) {
-                            audioData = new Uint8Array(await event.data.arrayBuffer());
-                        }
-
-                        if (audioData && openaiWs?.readyState === WebSocketClient.OPEN && !isPlaying) {
-                            const base64Audio = btoa(String.fromCharCode(...audioData));
-                            openaiWs.send(JSON.stringify({
-                                type: "input_audio_buffer.append",
-                                audio: base64Audio,
-                            }));
-                        }
-                    };
-
-                    clientWs.onclose = () => {
-                        console.log(`[Device] Disconnected: ${deviceId}`);
-                        openaiWs?.close();
-                    };
-
-                    clientWs.onerror = (e: Event) => {
-                        console.error(`[Device Error] ${deviceId}:`, e);
-                    };
-
-                    return response;
+                if (event.data instanceof ArrayBuffer) {
+                    audioData = new Uint8Array(event.data);
+                } else if (event.data instanceof Uint8Array) {
+                    audioData = event.data;
+                } else if (event.data instanceof Blob) {
+                    audioData = new Uint8Array(await event.data.arrayBuffer());
                 }
 
-// ============ HTTP Handler ============
+                if (audioData && openaiWs?.readyState === WebSocketClient.OPEN && !isPlaying) {
+                    const base64Audio = btoa(String.fromCharCode(...audioData));
+                    openaiWs.send(JSON.stringify({
+                        type: "input_audio_buffer.append",
+                        audio: base64Audio,
+                    }));
+                }
+            };
 
-function handleRequest(request: Request): Promise<Response> | Response {
-                const url = new URL(request.url);
-                const path = url.pathname;
 
-                if(path === "/ws" && request.headers.get("upgrade") === "websocket") {
+
+            clientWs.onclose = () => {
+                console.log(`[Device] Disconnected: ${deviceId}`);
+                openaiWs?.close();
+            };
+
+            clientWs.onerror = (e: Event) => {
+                console.error(`[Device Error] ${deviceId}:`, e);
+            };
+
+            return response;
+        }
+
+    // ============ HTTP Handler ============
+
+    function handleRequest(request: Request): Promise<Response> | Response {
+            const url = new URL(request.url);
+            const path = url.pathname;
+
+            if (path === "/ws" && request.headers.get("upgrade") === "websocket") {
                 return handleWebSocket(request);
             }
 
-    if (path === "/health") {
+            if (path === "/health") {
                 return new Response(JSON.stringify({ status: "ok", server: "deno" }), {
                     headers: { "Content-Type": "application/json" },
                 });
@@ -412,9 +416,9 @@ function handleRequest(request: Request): Promise<Response> | Response {
             return new Response("Not Found", { status: 404 });
         }
 
-// ============ Server Start ============
+        // ============ Server Start ============
 
-console.log(`
+        console.log(`
 ╔════════════════════════════════════════════╗
 ║     Magoo AI Companion - Deno Server       ║
 ╠════════════════════════════════════════════╣
