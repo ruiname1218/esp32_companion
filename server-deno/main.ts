@@ -156,6 +156,17 @@ async function handleWebSocket(request: Request): Promise<Response> {
     const MAX_CONVERSATION_ITEMS = 10; // Keep last 10 conversation items (5 exchanges)
     const conversationItemIds: string[] = [];
 
+    // Aizuchi phrases for instant response (reduces perceived latency)
+    const AIZUCHI_PHRASES = [
+        "うんうん！",
+        "へぇ！",
+        "そうなんだ！",
+        "なるほど！",
+        "うん！",
+        "ふーん！",
+        "そっかぁ！",
+    ];
+
     // Audio Streaming Queue (Sequential Processing)
     // We store task functions that return the audio ReadableStream
     // This delays fetch until previous audio is finished (Strict Sequential)
@@ -238,9 +249,29 @@ async function handleWebSocket(request: Request): Promise<Response> {
                             // Logic to clear queue could be added here (but careful with Promises)
                             break;
 
-                        case "input_audio_buffer.speech_stopped":
+                        case "input_audio_buffer.speech_stopped": {
                             console.log("Speech ended, processing...");
+
+                            // Instantly play aizuchi to reduce perceived latency
+                            const aizuchi = AIZUCHI_PHRASES[Math.floor(Math.random() * AIZUCHI_PHRASES.length)];
+                            console.log(`[Aizuchi] Playing: ${aizuchi}`);
+
+                            // Send audio_start event
+                            try {
+                                clientWs.send(JSON.stringify({
+                                    event: "audio_start",
+                                    sample_rate: 44100,
+                                    format: "pcm",
+                                }));
+                            } catch { /* ignore */ }
+
+                            // Queue aizuchi TTS (will play first, before AI response)
+                            const aizuchiTask = () => streamTTS(aizuchi, config.voice_id);
+                            audioStreamQueue.push(aizuchiTask);
+                            processAudioStreamQueue(clientWs);
+
                             break;
+                        }
 
                         case "conversation.item.created": {
                             // Track conversation items for sliding window
