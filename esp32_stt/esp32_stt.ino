@@ -468,7 +468,7 @@ void sendMicrophoneAudio() {
   esp_err_t result = i2s_read(I2S_MIC_PORT, buffer, sizeof(buffer), &bytesRead, 0);
   
   if (result == ESP_OK && bytesRead > 0) {
-    // Apply software gain (3x amplification)
+    // Apply software gain (5x amplification for better sensitivity)
     const int GAIN = 3;
     size_t samples = bytesRead / sizeof(int16_t);
     for (size_t i = 0; i < samples; i++) {

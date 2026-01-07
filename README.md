@@ -178,3 +178,6 @@ ESP32に書き込み
 ## 📝 ライセンス
 
 MIT License
+
+
+AWS EKS（Kubernetes）とvoicevoxをTTSで使うのあり！

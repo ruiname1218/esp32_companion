@@ -153,7 +153,7 @@ async function handleWebSocket(request: Request): Promise<Response> {
     let sentenceBuffer = "";
 
     // Conversation Sliding Window - Keep only recent N items
-    const MAX_CONVERSATION_ITEMS = 10; // Keep last 10 conversation items (5 exchanges)
+    const MAX_CONVERSATION_ITEMS = 4; // Keep last 4 conversation items (2 exchanges)
     const conversationItemIds: string[] = [];
 
     // Aizuchi phrases for instant response (reduces perceived latency)
