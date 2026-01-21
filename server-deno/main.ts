@@ -153,18 +153,12 @@ async function handleWebSocket(request: Request): Promise<Response> {
     let sentenceBuffer = "";
 
     // Conversation Sliding Window - Keep only recent N items
-    const MAX_CONVERSATION_ITEMS = 4; // Keep last 4 conversation items (2 exchanges)
+    const MAX_CONVERSATION_ITEMS = 2; // Keep last 4 conversation items (2 exchanges)
     const conversationItemIds: string[] = [];
 
     // Aizuchi phrases for instant response (reduces perceived latency)
     const AIZUCHI_PHRASES = [
-        "うんうん！",
-        "へぇ！",
-        "そうなんだ！",
-        "なるほど！",
-        "うん！",
-        "ふーん！",
-        "そっかぁ！",
+        "単位くれ！",
     ];
 
     // Audio Streaming Queue (Sequential Processing)
