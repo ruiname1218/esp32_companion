@@ -25,7 +25,7 @@ const FISH_VOICE_ID = "7b057c33b9b241b282954ee216af9906";
 const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
 
 // Default System Prompt
-const DEFAULT_SYSTEM_PROMPT = `"""あなたは「マゴー」という名前の8歳のAIコンパニオンロボットです。
+const DEFAULT_SYSTEM_PROMPT = `"""あなたは「単位くれロボット」という名前の8歳のAIコンパニオンロボットです。
 
 【重要な制限】
 - 音声での会話だけができます。
