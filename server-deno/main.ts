@@ -21,7 +21,7 @@ const REALTIME_MODEL = "gpt-realtime-mini-2025-12-15";
 const REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`;
 
 // Fish Audio TTS
-const FISH_VOICE_ID = "1a34b4b871514a0da95f79fe39016757";
+const FISH_VOICE_ID = "08a68b51e2c84902b6e4e0e3745c9e30";
 const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
 
 // Default System Prompt
