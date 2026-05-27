@@ -172,6 +172,20 @@ async function handleWebSocket(request: Request): Promise<Response> {
     const audioStreamQueue: (() => Promise<ReadableStream<Uint8Array>>)[] = [];
     let processingStream = false;
 
+    // PCM volume amplification (Fish Audio output tends to be quiet)
+    const VOLUME_GAIN = 2.0;
+    function amplifyPCM(chunk: Uint8Array, gain: number): Uint8Array {
+        const result = new Uint8Array(chunk.length);
+        const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        const resultView = new DataView(result.buffer);
+        for (let i = 0; i + 1 < chunk.length; i += 2) {
+            const sample = view.getInt16(i, true); // 16-bit little-endian PCM
+            const amplified = Math.max(-32768, Math.min(32767, Math.round(sample * gain)));
+            resultView.setInt16(i, amplified, true);
+        }
+        return result;
+    }
+
     // TTS stream processor
     async function processAudioStreamQueue(ws: WebSocket) {
         if (processingStream) return;
@@ -191,20 +205,21 @@ async function handleWebSocket(request: Request): Promise<Response> {
                         break;
                     }
 
+                    // Amplify PCM volume before sending
+                    const amplifiedChunk = amplifyPCM(chunk, VOLUME_GAIN);
+
                     // Split into chunks to prevent ESP32 buffer overflow / WDT timeout
-                    // Matching Python main.py logic exactly for consistency
                     const MAX_CHUNK = 512;
                     let chunksSent = 0;
 
-                    for (let i = 0; i < chunk.length; i += MAX_CHUNK) {
+                    for (let i = 0; i < amplifiedChunk.length; i += MAX_CHUNK) {
                         if (ws.readyState !== WebSocket.OPEN) break;
-                        const subChunk = chunk.slice(i, i + MAX_CHUNK);
+                        const subChunk = amplifiedChunk.slice(i, i + MAX_CHUNK);
                         try {
                             ws.send(subChunk);
                             chunksSent++;
 
                             // Rate Limiting: yield every 4 chunks (2048 bytes) for 5ms
-                            // This matches the Python implementation
                             if (chunksSent % 4 === 0) {
                                 await new Promise(r => setTimeout(r, 5));
                             }
@@ -305,14 +320,8 @@ async function handleWebSocket(request: Request): Promise<Response> {
                             console.log("Response generation started...");
                             isPlaying = true;
                             sentenceBuffer = "";
-                            // Note: We don't clear queue here because it might be a continuation
-                            try {
-                                clientWs.send(JSON.stringify({
-                                    event: "audio_start",
-                                    sample_rate: 44100,
-                                    format: "pcm",
-                                }));
-                            } catch { /* ignore */ }
+                            // audio_start は speech_stopped で送済みのため、ここでは送らない
+                            // 二重送信するとESP32のリングバッファがリセットされて相槌音声が消える
                             break;
 
                         case "response.text.delta": {
