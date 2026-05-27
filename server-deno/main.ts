@@ -77,7 +77,6 @@ function connectToOpenAI(): Promise<WebSocketClient> {
         const ws = new WebSocketClient(REALTIME_URL, {
             headers: {
                 "Authorization": `Bearer ${OPENAI_API_KEY}`,
-                "OpenAI-Beta": "realtime=v1",
             },
         });
 

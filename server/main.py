@@ -213,7 +213,6 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str = None):
     
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
-        "OpenAI-Beta": "realtime=v1"
     }
     
     try:
