@@ -1,7 +1,6 @@
 # Magoo - AI Voice Companion
 
-
-<video src="https://github.com/user-attachments/assets/29f5174c-b104-40a9-b8f1-def9c8514cfb" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/29f5174c-b104-40a9-b8f1-def9c8514cfb" controls width="100%" autoplay muted playsinline></video>
 
 
 ESP32-S3を使ったリアルタイム音声AIコンパニオン。OpenAI Realtime APIとFish Audio TTSで自然な会話を実現。
